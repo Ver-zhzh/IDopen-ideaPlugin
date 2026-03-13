@@ -37,7 +37,7 @@ class IDopenSettingsConfigurable : Configurable {
     private val modelField = JComboBox<String>(CollectionComboBoxModel(modelOptions))
     private val shellPathField = TextFieldWithBrowseButton()
     private val timeoutField = JSpinner(SpinnerNumberModel(120, 5, 3600, 5))
-    private val enableToolsCheckBox = JBCheckBox("启用工具调用（部分模型不支持，遇到 404 请关闭）")
+    private val enableToolsCheckBox = JBCheckBox("启用工具调用（部分模型不支持；若聊天报 404，请关闭）")
     private val headersArea = JBTextArea()
     private var panel: JPanel? = null
 
@@ -47,10 +47,10 @@ class IDopenSettingsConfigurable : Configurable {
         if (panel != null) return panel!!
 
         providerTypeField.isEditable = false
-        providerTypeField.toolTipText = "v1 仅支持 OpenAI-compatible chat completions。"
+        providerTypeField.toolTipText = "当前版本只支持 OpenAI-compatible chat completions。"
 
         modelField.isEditable = true
-        modelField.preferredSize = Dimension(240, 32)
+        modelField.preferredSize = Dimension(260, 32)
 
         shellPathField.addBrowseFolderListener(
             "选择 Shell",
@@ -67,17 +67,17 @@ class IDopenSettingsConfigurable : Configurable {
         val headerPanel = JPanel(BorderLayout(0, 6))
         headerPanel.add(JBLabel("请求头（可选，每行一个：Header-Name: value）"), BorderLayout.NORTH)
         headerPanel.add(JBScrollPane(headersArea), BorderLayout.CENTER)
-        headerPanel.preferredSize = Dimension(400, 140)
+        headerPanel.preferredSize = Dimension(420, 140)
 
         val actionPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         val nimPresetButton = JButton("应用 NVIDIA NIM 预设")
         val testConnectionButton = JButton("测试连接")
         val fetchModelsButton = JButton("获取模型")
-        val clearButton = JButton("清空请求头")
+        val clearHeadersButton = JButton("清空请求头")
         actionPanel.add(nimPresetButton)
         actionPanel.add(testConnectionButton)
         actionPanel.add(fetchModelsButton)
-        actionPanel.add(clearButton)
+        actionPanel.add(clearHeadersButton)
 
         nimPresetButton.addActionListener {
             if (baseUrlField.text.isBlank()) {
@@ -107,7 +107,11 @@ class IDopenSettingsConfigurable : Configurable {
                     replaceModelOptions(result.models)
                 }
                 val sampleModels = result.models.take(5)
-                val modelHint = if (sampleModels.isEmpty()) "" else "\n示例模型：${sampleModels.joinToString("、")}"
+                val modelHint = if (sampleModels.isEmpty()) {
+                    ""
+                } else {
+                    "\n示例模型：${sampleModels.joinToString("、")}"
+                }
                 Messages.showInfoMessage(panel, result.message + modelHint, "连接测试")
             }.onFailure { error ->
                 Messages.showErrorDialog(panel, error.message ?: "连接失败。", "连接测试")
@@ -126,11 +130,9 @@ class IDopenSettingsConfigurable : Configurable {
                 replaceModelOptions(models)
                 val selected = selectedModel().takeIf { it in models } ?: models.first()
                 setSelectedModel(selected)
-                val preview = models.take(12).joinToString("\n")
-                val suffix = if (models.size > 12) "\n..." else ""
                 Messages.showInfoMessage(
                     panel,
-                    "已获取 ${models.size} 个模型，已填入下拉列表并选中：$selected\n\n$preview$suffix",
+                    "已获取 ${models.size} 个模型，并填入下拉列表。\n当前选中：$selected",
                     "获取模型",
                 )
             }.onFailure { error ->
@@ -138,14 +140,15 @@ class IDopenSettingsConfigurable : Configurable {
             }
         }
 
-        clearButton.addActionListener {
+        clearHeadersButton.addActionListener {
             headersArea.text = ""
         }
 
-        enableToolsCheckBox.toolTipText = "启用后会向模型发送 tools/tool_choice。NVIDIA NIM 的部分模型不支持。"
+        enableToolsCheckBox.toolTipText =
+            "开启后会向模型发送 tools/tool_choice。部分 NVIDIA NIM 模型不支持 function calling，出现 404 时请关闭。"
 
         panel = FormBuilder.createFormBuilder()
-            .addLabeledComponent("提供方类型：", providerTypeField)
+            .addLabeledComponent("Provider：", providerTypeField)
             .addLabeledComponent("接口地址：", baseUrlField)
             .addLabeledComponent("API Key：", apiKeyField)
             .addLabeledComponent("默认模型：", modelField)

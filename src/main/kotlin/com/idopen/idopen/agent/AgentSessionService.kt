@@ -106,9 +106,7 @@ class AgentSessionService(private val project: Project) {
         repeat(8) {
             if (Thread.currentThread().isInterrupted) return
 
-            val assistantEntry = TranscriptEntry.Assistant(nextId("assistant"), "")
-            transcript += assistantEntry
-            emit(SessionEvent.EntryAdded(assistantEntry))
+            var assistantEntry: TranscriptEntry.Assistant? = null
 
             val result = client.streamChat(
                 OpenAICompatibleClient.ChatRequest(
@@ -117,8 +115,20 @@ class AgentSessionService(private val project: Project) {
                     tools = toolDefinitions,
                 ),
             ) { delta ->
-                assistantEntry.text += delta
-                emit(SessionEvent.MessageDelta(assistantEntry.id, delta, assistantEntry.text))
+                val entry = assistantEntry ?: TranscriptEntry.Assistant(nextId("assistant"), "").also {
+                    assistantEntry = it
+                    transcript += it
+                    emit(SessionEvent.EntryAdded(it))
+                }
+                entry.text += delta
+                emit(SessionEvent.MessageDelta(entry.id, delta, entry.text))
+            }
+
+            if (assistantEntry == null && result.text.isNotBlank()) {
+                val entry = TranscriptEntry.Assistant(nextId("assistant"), result.text)
+                assistantEntry = entry
+                transcript += entry
+                emit(SessionEvent.EntryAdded(entry))
             }
 
             history += ConversationMessage.Assistant(
@@ -204,6 +214,8 @@ class AgentSessionService(private val project: Project) {
             You are IDopen, a coding agent running inside IntelliJ IDEA.
             Work only inside the current project: $projectRoot
             Prefer reading files and searching the project before suggesting changes.
+            When IDE context references are attached, treat them as hints and inspect exact code with IDE tools.
+            Use read_file(path, offset, limit) for targeted reads instead of assuming full-file context.
             Use apply_patch_preview to modify files. newContent must be the full updated file contents.
             Use run_command only when it materially helps. Every command and patch requires user approval.
             You are connected through an OpenAI-compatible chat completions API.

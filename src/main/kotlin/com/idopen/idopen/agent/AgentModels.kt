@@ -7,6 +7,12 @@ enum class ProviderType {
     OPENAI_COMPATIBLE,
 }
 
+enum class AttachmentKind {
+    CURRENT_FILE,
+    CURRENT_SELECTION,
+    GENERIC,
+}
+
 data class ProviderConfig(
     val type: ProviderType,
     val baseUrl: String,
@@ -16,8 +22,12 @@ data class ProviderConfig(
 )
 
 data class AttachmentContext(
+    val kind: AttachmentKind = AttachmentKind.GENERIC,
     val label: String,
     val reference: String = label,
+    val path: String? = null,
+    val startLine: Int? = null,
+    val endLine: Int? = null,
     val resolvedContent: String? = null,
     val content: String? = resolvedContent,
 )

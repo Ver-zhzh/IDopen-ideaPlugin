@@ -60,7 +60,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val transcriptPanel = JPanel()
     private val transcriptScrollPane = JBScrollPane(transcriptPanel)
     private val inputArea = PromptTextArea(
-        "输入你要修改的代码、排查的问题，或想执行的项目命令...",
+        "输入你的需求，例如：解释当前类、修复这个错误、搜索某个调用链，或生成修改方案...",
         5,
         40,
     )
@@ -164,7 +164,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun createComposer(): JComponent {
         val title = JBLabel("对话")
         title.font = title.font.deriveFont(Font.BOLD)
-        val hint = JBLabel("Ctrl+Enter 发送，附带上下文会让结果更稳。")
+        val hint = JBLabel("Ctrl+Enter 发送；附带 IDE 上下文可以让结果更准。")
         hint.foreground = JBColor.GRAY
 
         val top = JPanel(BorderLayout())
@@ -228,10 +228,10 @@ class IDopenToolWindowPanel(private val project: Project) {
             BorderFactory.createEmptyBorder(14, 14, 14, 14),
         )
 
-        val title = JBLabel("先告诉我你想改什么")
+        val title = JBLabel("先告诉我你想做什么。")
         title.font = title.font.deriveFont(Font.BOLD)
         val body = JBLabel(
-            "<html>先在<b>设置</b>里配好模型接口，再试试：<i>“解释这个类”</i>、<i>“修复这个 bug”</i>、<i>“搜索这个 API 在哪里被调用”</i>。</html>",
+            "<html>先在<b>设置</b>里配置模型接口，然后试试：<i>“解释当前类”</i>、<i>“修复这个 bug”</i>、<i>“搜索这个 API 在哪里被调用”</i>。</html>",
         )
         body.foreground = JBColor.GRAY
 
@@ -316,7 +316,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         when (entry) {
             is TranscriptEntry.User -> addMessageCard(
                 id = entry.id,
-                stage = "你",
+                stage = "用户",
                 title = "你",
                 subtitle = null,
                 text = entry.text,
@@ -391,8 +391,8 @@ class IDopenToolWindowPanel(private val project: Project) {
 
             is TranscriptEntry.Context -> addMessageCard(
                 id = entry.id,
-                stage = "CONTEXT",
-                title = "IDE Context",
+                stage = "上下文",
+                title = "IDE 上下文",
                 subtitle = null,
                 text = entry.summary,
                 createdAt = entry.createdAt,
@@ -690,8 +690,10 @@ class IDopenToolWindowPanel(private val project: Project) {
             if (file != null) {
                 val relative = relativeProjectPath(file)
                 attachments += AttachmentContext(
-                    label = "当前文件：$relative",
-                    reference = "当前文件：$relative。使用 get_current_file 或 read_file(path=\"$relative\") 读取内容。",
+                    kind = com.idopen.idopen.agent.AttachmentKind.CURRENT_FILE,
+                    label = "当前文件",
+                    reference = "当前文件：$relative",
+                    path = relative,
                     resolvedContent = editor.document.text.take(12_000),
                     content = editor.document.text.take(12_000),
                 )
@@ -701,14 +703,18 @@ class IDopenToolWindowPanel(private val project: Project) {
             val selection = editor.selectionModel.selectedText
             if (!selection.isNullOrBlank()) {
                 val file = FileDocumentManager.getInstance().getFile(editor.document)
-                val relative = file?.let(::relativeProjectPath) ?: "当前编辑器"
+                val relative = file?.let(::relativeProjectPath) ?: "<current editor>"
                 val startOffset = editor.selectionModel.selectionStart
                 val endOffset = editor.selectionModel.selectionEnd
                 val startLine = editor.document.getLineNumber(startOffset) + 1
                 val endLine = editor.document.getLineNumber((endOffset - 1).coerceAtLeast(startOffset)) + 1
                 attachments += AttachmentContext(
+                    kind = com.idopen.idopen.agent.AttachmentKind.CURRENT_SELECTION,
                     label = "当前选区",
-                    reference = "当前选区：$relative 第 $startLine-$endLine 行，共 ${selection.length} 字符。使用 get_current_selection 读取准确内容。",
+                    reference = "当前选区：$relative 第 $startLine-$endLine 行，共 ${selection.length} 个字符",
+                    path = relative,
+                    startLine = startLine,
+                    endLine = endLine,
                     resolvedContent = selection,
                     content = selection,
                 )

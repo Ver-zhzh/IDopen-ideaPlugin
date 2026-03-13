@@ -10,8 +10,12 @@ class AttachmentPromptSupportTest {
         val prepared = AttachmentPromptSupport.prepare(
             attachments = listOf(
                 AttachmentContext(
+                    kind = AttachmentKind.CURRENT_SELECTION,
                     label = "当前选区",
-                    reference = "当前选区：src/App.kt 第 10-20 行，共 120 字符。",
+                    reference = "当前选区：src/App.kt 第 10-20 行",
+                    path = "src/App.kt",
+                    startLine = 10,
+                    endLine = 20,
                     resolvedContent = "fun example() = Unit",
                 ),
             ),
@@ -20,7 +24,8 @@ class AttachmentPromptSupportTest {
 
         assertTrue(prepared.transcriptSummary.contains("当前选区"))
         assertTrue(prepared.injectedPrompt.contains("get_current_selection"))
-        assertTrue(prepared.injectedPrompt.contains("references only"))
+        assertTrue(prepared.injectedPrompt.contains("read_file(path=\"src/App.kt\""))
+        assertTrue(prepared.injectedPrompt.contains("hints only"))
         assertFalse(prepared.injectedPrompt.contains("fun example() = Unit"))
     }
 
@@ -29,8 +34,10 @@ class AttachmentPromptSupportTest {
         val prepared = AttachmentPromptSupport.prepare(
             attachments = listOf(
                 AttachmentContext(
+                    kind = AttachmentKind.CURRENT_FILE,
                     label = "当前文件",
                     reference = "当前文件：src/App.kt",
+                    path = "src/App.kt",
                     resolvedContent = "class App",
                 ),
             ),

@@ -40,14 +40,16 @@ class IntelliJAgentTools(
         ),
         ToolDefinition(
             id = "read_file",
-            description = "Read a file from the current project.",
+            description = "Read a file or directory from the current project. Prefer offset/limit over full-file reads.",
             inputSchema = mapOf(
                 "type" to "object",
                 "required" to listOf("path"),
                 "properties" to mapOf(
                     "path" to mapOf("type" to "string"),
-                    "startLine" to mapOf("type" to "integer"),
-                    "endLine" to mapOf("type" to "integer"),
+                    "offset" to mapOf("type" to "integer", "minimum" to 1),
+                    "limit" to mapOf("type" to "integer", "minimum" to 1),
+                    "startLine" to mapOf("type" to "integer", "minimum" to 1),
+                    "endLine" to mapOf("type" to "integer", "minimum" to 1),
                 ),
             ),
         ),
@@ -106,6 +108,8 @@ class IntelliJAgentTools(
             "read_project_tree" -> readProjectTree(args.path("maxDepth").asInt(4), args.path("maxEntries").asInt(200))
             "read_file" -> readFile(
                 path = args.path("path").asText(""),
+                offset = args.optionalInt("offset"),
+                limit = args.optionalInt("limit"),
                 startLine = args.optionalInt("startLine"),
                 endLine = args.optionalInt("endLine"),
             )
@@ -127,16 +131,22 @@ class IntelliJAgentTools(
 
     private fun readProjectTree(maxDepth: Int, maxEntries: Int): ToolExecutionResult {
         val output = StringBuilder()
-        var remaining = maxEntries.coerceAtLeast(1)
+        var appended = 0
         ReadAction.run<RuntimeException> {
             ProjectRootManager.getInstance(project).contentRoots.forEach { root ->
                 appendTree(root, root, maxDepth.coerceAtLeast(1), output, canAppend = {
-                    remaining -= 1
-                    remaining > 0
+                    if (appended >= maxEntries.coerceAtLeast(1)) {
+                        false
+                    } else {
+                        appended += 1
+                        true
+                    }
                 })
             }
         }
-        return ToolExecutionResult(if (output.isBlank()) "未找到项目文件。" else output.toString().trimEnd())
+        return ToolExecutionResult(
+            if (output.isBlank()) "未找到项目内容。" else output.toString().trimEnd(),
+        )
     }
 
     private fun appendTree(
@@ -149,22 +159,93 @@ class IntelliJAgentTools(
     ) {
         if (depth > maxDepth || !canAppend()) return
         val relative = VfsUtil.getRelativePath(file, root, '/') ?: file.name
-        output.append("  ".repeat(depth)).append(if (file.isDirectory) "[D] " else "[F] ").append(relative).append('\n')
+        output.append("  ".repeat(depth))
+            .append(if (file.isDirectory) "[dir] " else "[file] ")
+            .append(relative)
+            .append('\n')
         if (!file.isDirectory || depth == maxDepth) return
         file.children.sortedBy { it.name }.forEach { child ->
             appendTree(root, child, maxDepth, output, canAppend, depth + 1)
         }
     }
 
-    private fun readFile(path: String, startLine: Int?, endLine: Int?): ToolExecutionResult {
+    private fun readFile(
+        path: String,
+        offset: Int?,
+        limit: Int?,
+        startLine: Int?,
+        endLine: Int?,
+    ): ToolExecutionResult {
         if (path.isBlank()) return ToolExecutionResult("缺少 path 参数。", success = false)
         val resolved = resolveProjectPath(path) ?: return ToolExecutionResult("路径超出了当前项目范围。", success = false)
-        if (!Files.exists(resolved)) return ToolExecutionResult("文件不存在：$path", success = false)
-        val lines = Files.readString(resolved, StandardCharsets.UTF_8).lines()
-        val from = (startLine ?: 1).coerceAtLeast(1)
-        val to = (endLine ?: lines.size).coerceAtMost(lines.size)
-        val excerpt = lines.subList(from - 1, to).mapIndexed { index, line -> "${from + index}: $line" }.joinToString("\n")
-        return ToolExecutionResult("文件：$path\n$excerpt".trim())
+        if (!Files.exists(resolved)) return ToolExecutionResult("文件或目录不存在：$path", success = false)
+
+        val request = ReadWindowSupport.normalizeRequest(
+            offset = offset,
+            limit = limit,
+            startLine = startLine,
+            endLine = endLine,
+        )
+        val relative = projectRoot.relativize(resolved).toString().replace('\\', '/')
+
+        return when {
+            Files.isDirectory(resolved) -> readDirectory(relative, resolved, request)
+            isLikelyBinary(resolved) -> ToolExecutionResult("无法读取二进制文件：$path", success = false)
+            else -> readTextFile(relative, resolved, request)
+        }
+    }
+
+    private fun readDirectory(
+        relative: String,
+        directory: Path,
+        request: ReadWindowSupport.WindowRequest,
+    ): ToolExecutionResult {
+        val entries = Files.list(directory).use { stream ->
+            stream.map { child ->
+                val name = child.fileName.toString()
+                if (Files.isDirectory(child)) "$name/" else name
+            }.sorted().toList()
+        }
+        return ToolExecutionResult(ReadWindowSupport.formatDirectory(relative, entries, request))
+    }
+
+    private fun readTextFile(
+        relative: String,
+        file: Path,
+        request: ReadWindowSupport.WindowRequest,
+    ): ToolExecutionResult {
+        val lines = mutableListOf<String>()
+        var totalLines = 0
+        var hasMore = false
+
+        Files.newBufferedReader(file, StandardCharsets.UTF_8).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                totalLines += 1
+                if (totalLines < request.offset) continue
+                if (lines.size < request.limit) {
+                    lines += line
+                } else {
+                    hasMore = true
+                }
+            }
+        }
+
+        if (request.offset > totalLines && !(request.offset == 1 && totalLines == 0)) {
+            return ToolExecutionResult("offset=${request.offset} 超出了文件总行数 $totalLines。", success = false)
+        }
+
+        return ToolExecutionResult(
+            ReadWindowSupport.formatFile(
+                path = relative,
+                slice = ReadWindowSupport.WindowSlice(
+                    offset = request.offset,
+                    lines = lines,
+                    totalLines = totalLines,
+                    hasMore = hasMore,
+                ),
+            ),
+        )
     }
 
     private fun searchText(query: String, maxResults: Int): ToolExecutionResult {
@@ -178,14 +259,15 @@ class IntelliJAgentTools(
                 text.lineSequence().forEachIndexed { index, line ->
                     if (results.size >= maxResults) return@forEachIndexed
                     if (line.contains(query, ignoreCase = true)) {
-                        val relative = relativePath(file)
-                        results += "$relative:${index + 1}: ${line.trim()}"
+                        results += "${relativePath(file)}:${index + 1}: ${line.trim()}"
                     }
                 }
                 true
             }
         }
-        return ToolExecutionResult(if (results.isEmpty()) "没有找到包含“$query”的内容。" else results.joinToString("\n"))
+        return ToolExecutionResult(
+            if (results.isEmpty()) "没有找到包含 \"$query\" 的内容。" else results.joinToString("\n"),
+        )
     }
 
     private fun getCurrentFile(): ToolExecutionResult {
@@ -193,7 +275,12 @@ class IntelliJAgentTools(
             ?: return ToolExecutionResult("当前没有激活的编辑器。", success = false)
         val file = FileDocumentManager.getInstance().getFile(editor.document)
             ?: return ToolExecutionResult("当前没有激活的文件。", success = false)
-        return ToolExecutionResult("文件：${relativePath(file)}\n${truncate(editor.document.text)}")
+        val lines = editor.document.text.lines()
+        val slice = ReadWindowSupport.sliceLines(
+            lines = lines,
+            request = ReadWindowSupport.normalizeRequest(offset = 1, limit = ReadWindowSupport.DEFAULT_LIMIT),
+        )
+        return ToolExecutionResult(ReadWindowSupport.formatFile(relativePath(file), slice))
     }
 
     private fun getCurrentSelection(): ToolExecutionResult {
@@ -201,7 +288,19 @@ class IntelliJAgentTools(
             ?: return ToolExecutionResult("当前没有激活的编辑器。", success = false)
         val selection = editor.selectionModel.selectedText
             ?: return ToolExecutionResult("当前编辑器没有选中文本。", success = false)
-        return ToolExecutionResult(selection)
+        val file = FileDocumentManager.getInstance().getFile(editor.document)
+        val startOffset = editor.selectionModel.selectionStart
+        val endOffset = editor.selectionModel.selectionEnd
+        val startLine = editor.document.getLineNumber(startOffset) + 1
+        val endLine = editor.document.getLineNumber((endOffset - 1).coerceAtLeast(startOffset)) + 1
+        return ToolExecutionResult(
+            ReadWindowSupport.formatSelection(
+                path = file?.let(::relativePath),
+                startLine = startLine,
+                endLine = endLine,
+                content = selection,
+            ),
+        )
     }
 
     private fun applyPatchPreview(filePath: String, newContent: String, explanation: String): ToolExecutionResult {
@@ -212,7 +311,12 @@ class IntelliJAgentTools(
             id = "approval-${System.nanoTime()}",
             type = ApprovalRequest.Type.PATCH,
             title = "写入文件 $filePath",
-            payload = ApprovalPayload.Patch(filePath, beforeText, newContent, explanation.ifBlank { "未提供修改说明。" }),
+            payload = ApprovalPayload.Patch(
+                filePath = filePath,
+                beforeText = beforeText,
+                afterText = newContent,
+                explanation = explanation.ifBlank { "未提供修改说明。" },
+            ),
         )
         val approved = approvalRequester(request).get()
         if (!approved) return ToolExecutionResult("用户拒绝了这次文件修改。", success = false)
@@ -222,9 +326,13 @@ class IntelliJAgentTools(
 
     private fun runCommand(command: String, workingDirectory: String?): ToolExecutionResult {
         if (command.isBlank()) return ToolExecutionResult("缺少 command 参数。", success = false)
-        val directory = if (workingDirectory.isNullOrBlank()) projectRoot else {
-            resolveProjectPath(workingDirectory) ?: return ToolExecutionResult("workingDirectory 超出了当前项目范围。", success = false)
+        val directory = if (workingDirectory.isNullOrBlank()) {
+            projectRoot
+        } else {
+            resolveProjectPath(workingDirectory)
+                ?: return ToolExecutionResult("workingDirectory 超出了当前项目范围。", success = false)
         }
+
         val request = ApprovalRequest(
             id = "approval-${System.nanoTime()}",
             type = ApprovalRequest.Type.COMMAND,
@@ -309,6 +417,28 @@ class IntelliJAgentTools(
 
     private fun truncate(text: String, maxChars: Int = 12_000): String {
         return if (text.length <= maxChars) text else text.take(maxChars) + "\n...[truncated]"
+    }
+
+    private fun isLikelyBinary(path: Path): Boolean {
+        val extension = path.fileName.toString().substringAfterLast('.', missingDelimiterValue = "").lowercase()
+        if (extension in setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "jar", "class", "zip", "gz", "7z", "exe", "dll", "so", "bin", "pdf")) {
+            return true
+        }
+
+        Files.newInputStream(path).use { stream ->
+            val sample = ByteArray(4096)
+            val read = stream.read(sample)
+            if (read <= 0) return false
+            var nonPrintable = 0
+            for (index in 0 until read) {
+                val value = sample[index].toInt() and 0xFF
+                if (value == 0) return true
+                if (value < 9 || (value in 14..31)) {
+                    nonPrintable += 1
+                }
+            }
+            return nonPrintable.toDouble() / read > 0.3
+        }
     }
 
     private fun com.fasterxml.jackson.databind.JsonNode.optionalText(field: String): String? {
