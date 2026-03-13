@@ -43,20 +43,23 @@ class AgentSessionService(private val project: Project) {
         }
 
         val settings = IDopenSettingsState.getInstance()
-        val trimmedText = text.trim()
+        val userText = text.trim()
 
         if (attachments.isNotEmpty()) {
-            val attachmentSummary = buildAttachmentSummary(attachments)
-            val attachmentEntry = TranscriptEntry.System(nextId("attachment"), attachmentSummary)
-            transcript += attachmentEntry
-            emit(SessionEvent.EntryAdded(attachmentEntry))
-            history += ConversationMessage.System(buildAttachmentPrompt(attachments, settings.enableToolCalling))
+            val prepared = AttachmentPromptSupport.prepare(
+                attachments = attachments,
+                toolCallingEnabled = settings.enableToolCalling,
+            )
+            val contextEntry = TranscriptEntry.System(nextId("context"), prepared.transcriptSummary)
+            transcript += contextEntry
+            history += ConversationMessage.System(prepared.injectedPrompt)
+            emit(SessionEvent.EntryAdded(contextEntry))
         }
 
-        val entry = TranscriptEntry.User(nextId("user"), trimmedText)
-        transcript += entry
-        history += ConversationMessage.User(trimmedText)
-        emit(SessionEvent.EntryAdded(entry))
+        val userEntry = TranscriptEntry.User(nextId("user"), userText)
+        transcript += userEntry
+        history += ConversationMessage.User(userText)
+        emit(SessionEvent.EntryAdded(userEntry))
         startRun()
     }
 
@@ -96,6 +99,7 @@ class AgentSessionService(private val project: Project) {
             emitFailure(provider.error)
             return
         }
+
         val config = provider.config ?: return
         val toolDefinitions = if (settings.enableToolCalling) tools.definitions() else emptyList()
 
@@ -134,9 +138,14 @@ class AgentSessionService(private val project: Project) {
 
             for (toolCall in result.toolCalls) {
                 if (Thread.currentThread().isInterrupted) return
-                val callEntry = TranscriptEntry.ToolCall(nextId("tool-call"), toolCall.name, toolCall.argumentsJson)
-                transcript += callEntry
-                emit(SessionEvent.EntryAdded(callEntry))
+
+                val toolEntry = TranscriptEntry.ToolCall(
+                    id = nextId("tool-call"),
+                    toolName = toolCall.name,
+                    argumentsJson = toolCall.argumentsJson,
+                )
+                transcript += toolEntry
+                emit(SessionEvent.EntryAdded(toolEntry))
                 emit(SessionEvent.ToolRequested(toolCall.id, toolCall.name, toolCall.argumentsJson))
 
                 val output = runCatching { tools.execute(toolCall) }
@@ -160,44 +169,6 @@ class AgentSessionService(private val project: Project) {
         }
 
         emitFailure("已达到最大工具调用轮数，任务已停止。")
-    }
-
-    private fun buildAttachmentSummary(attachments: List<AttachmentContext>): String {
-        return buildString {
-            appendLine("已附带 IDE 上下文：")
-            attachments.forEach { attachment ->
-                append("- ")
-                appendLine(attachment.reference)
-            }
-        }.trim()
-    }
-
-    private fun buildAttachmentPrompt(
-        attachments: List<AttachmentContext>,
-        toolCallingEnabled: Boolean,
-    ): String {
-        return if (toolCallingEnabled) {
-            buildString {
-                appendLine("Attached IDE context references:")
-                attachments.forEach { attachment ->
-                    appendLine("- ${attachment.reference}")
-                }
-                appendLine("Use the IDE tools to inspect the exact code before answering.")
-            }.trim()
-        } else {
-            buildString {
-                appendLine("Attached IDE context resolved by the plugin:")
-                attachments.forEach { attachment ->
-                    appendLine("### ${attachment.label}")
-                    appendLine(attachment.reference)
-                    val content = (attachment.resolvedContent ?: attachment.content).orEmpty().trim()
-                    if (content.isNotBlank()) {
-                        appendLine(content)
-                    }
-                    appendLine()
-                }
-            }.trim()
-        }
     }
 
     private fun requestApproval(request: ApprovalRequest): CompletableFuture<Boolean> {
