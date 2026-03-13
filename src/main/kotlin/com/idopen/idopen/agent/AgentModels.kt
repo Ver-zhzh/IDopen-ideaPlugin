@@ -118,6 +118,12 @@ sealed interface TranscriptEntry {
         val createdAt: Instant = Instant.now(),
     ) : TranscriptEntry
 
+    data class Context(
+        override val id: String,
+        val summary: String,
+        val createdAt: Instant = Instant.now(),
+    ) : TranscriptEntry
+
     data class System(
         override val id: String,
         val message: String,

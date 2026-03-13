@@ -50,7 +50,7 @@ class AgentSessionService(private val project: Project) {
                 attachments = attachments,
                 toolCallingEnabled = settings.enableToolCalling,
             )
-            val contextEntry = TranscriptEntry.System(nextId("context"), prepared.transcriptSummary)
+            val contextEntry = TranscriptEntry.Context(nextId("context"), prepared.transcriptSummary)
             transcript += contextEntry
             history += ConversationMessage.System(prepared.injectedPrompt)
             emit(SessionEvent.EntryAdded(contextEntry))

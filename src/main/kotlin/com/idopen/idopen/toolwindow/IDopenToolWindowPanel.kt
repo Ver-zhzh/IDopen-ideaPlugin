@@ -389,6 +389,21 @@ class IDopenToolWindowPanel(private val project: Project) {
                 codeBlock = false,
             )
 
+            is TranscriptEntry.Context -> addMessageCard(
+                id = entry.id,
+                stage = "CONTEXT",
+                title = "IDE Context",
+                subtitle = null,
+                text = entry.summary,
+                createdAt = entry.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.TOOL_ACCENT,
+                collapsible = true,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
             is TranscriptEntry.System -> addMessageCard(
                 id = entry.id,
                 stage = "系统",
@@ -676,6 +691,8 @@ class IDopenToolWindowPanel(private val project: Project) {
                 val relative = relativeProjectPath(file)
                 attachments += AttachmentContext(
                     label = "当前文件：$relative",
+                    reference = "当前文件：$relative。使用 get_current_file 或 read_file(path=\"$relative\") 读取内容。",
+                    resolvedContent = editor.document.text.take(12_000),
                     content = editor.document.text.take(12_000),
                 )
             }
@@ -683,8 +700,16 @@ class IDopenToolWindowPanel(private val project: Project) {
         if (includeSelection.isSelected && editor != null) {
             val selection = editor.selectionModel.selectedText
             if (!selection.isNullOrBlank()) {
+                val file = FileDocumentManager.getInstance().getFile(editor.document)
+                val relative = file?.let(::relativeProjectPath) ?: "当前编辑器"
+                val startOffset = editor.selectionModel.selectionStart
+                val endOffset = editor.selectionModel.selectionEnd
+                val startLine = editor.document.getLineNumber(startOffset) + 1
+                val endLine = editor.document.getLineNumber((endOffset - 1).coerceAtLeast(startOffset)) + 1
                 attachments += AttachmentContext(
                     label = "当前选区",
+                    reference = "当前选区：$relative 第 $startLine-$endLine 行，共 ${selection.length} 字符。使用 get_current_selection 读取准确内容。",
+                    resolvedContent = selection,
                     content = selection,
                 )
             }
