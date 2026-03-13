@@ -56,4 +56,12 @@ class ProviderConfigSupportTest {
         assertNull(result.error)
         assertEquals("", assertNotNull(result.config).model)
     }
+
+    @Test
+    fun `settings default keeps tool calling disabled`() {
+        val settings = IDopenSettingsState()
+
+        assertEquals(false, settings.enableToolCalling)
+        assertEquals(emptyList(), settings.knownModels)
+    }
 }

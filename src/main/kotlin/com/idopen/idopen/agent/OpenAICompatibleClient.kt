@@ -38,9 +38,9 @@ class OpenAICompatibleClient(
     fun testConnection(config: ProviderConfig): ConnectionCheckResult {
         val models = listModels(config)
         val message = if (models.isEmpty()) {
-            "连接成功，但服务未返回可用模型。"
+            "连接成功，但服务没有返回可用模型。"
         } else {
-            "连接成功，已发现 ${models.size} 个模型。"
+            "连接成功，发现 ${models.size} 个模型。"
         }
         return ConnectionCheckResult(message, models)
     }
@@ -55,8 +55,8 @@ class OpenAICompatibleClient(
             HttpResponse.BodyHandlers.ofInputStream(),
         )
         if (response.statusCode() !in 200..299) {
-            val error = response.body().use { it.readBytes().toString(StandardCharsets.UTF_8) }
-            error("获取模型列表失败：HTTP ${response.statusCode()} ${error.take(800)}")
+            val errorBody = response.body().use { it.readBytes().toString(StandardCharsets.UTF_8) }
+            error("获取模型列表失败：HTTP ${response.statusCode()} ${errorBody.take(800)}")
         }
 
         response.body().use { stream ->
@@ -64,7 +64,10 @@ class OpenAICompatibleClient(
             val data = root.path("data")
             if (!data.isArray) return emptyList()
             return data.mapNotNull { item ->
-                item.path("id").takeIf { !it.isMissingNode && !it.isNull }?.asText()?.takeIf(String::isNotBlank)
+                item.path("id")
+                    .takeIf { !it.isMissingNode && !it.isNull }
+                    ?.asText()
+                    ?.takeIf(String::isNotBlank)
             }.distinct().sorted()
         }
     }
@@ -86,16 +89,18 @@ class OpenAICompatibleClient(
             },
         )
 
-        val requestBuilder = requestBuilder(request.providerConfig, endpoint)
-            .timeout(Duration.ofMinutes(5))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream, application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-
-        val response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        val response = httpClient.send(
+            requestBuilder(request.providerConfig, endpoint)
+                .timeout(Duration.ofMinutes(5))
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream, application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                .build(),
+            HttpResponse.BodyHandlers.ofInputStream(),
+        )
         if (response.statusCode() !in 200..299) {
-            val error = response.body().use { it.readBytes().toString(StandardCharsets.UTF_8) }
-            error("OpenAI-compatible 请求失败：HTTP ${response.statusCode()} ${error.take(800)}")
+            val errorBody = response.body().use { it.readBytes().toString(StandardCharsets.UTF_8) }
+            error("OpenAI-compatible 请求失败：HTTP ${response.statusCode()} ${errorBody.take(800)}")
         }
 
         val contentType = response.headers().firstValue("content-type").orElse("")

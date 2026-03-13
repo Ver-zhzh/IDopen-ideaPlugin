@@ -8,6 +8,8 @@ import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
+import com.intellij.ui.CollectionComboBoxModel
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBScrollPane
@@ -19,6 +21,7 @@ import java.awt.Dimension
 import java.awt.FlowLayout
 import javax.swing.JButton
 import javax.swing.JComponent
+import javax.swing.JComboBox
 import javax.swing.JPanel
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
@@ -30,9 +33,11 @@ class IDopenSettingsConfigurable : Configurable {
     private val providerTypeField = JBTextField("OpenAI-compatible")
     private val baseUrlField = JBTextField()
     private val apiKeyField = JBPasswordField()
-    private val modelField = JBTextField()
+    private val modelOptions = mutableListOf<String>()
+    private val modelField = JComboBox<String>(CollectionComboBoxModel(modelOptions))
     private val shellPathField = TextFieldWithBrowseButton()
     private val timeoutField = JSpinner(SpinnerNumberModel(120, 5, 3600, 5))
+    private val enableToolsCheckBox = JBCheckBox("启用工具调用（部分模型不支持，遇到 404 请关闭）")
     private val headersArea = JBTextArea()
     private var panel: JPanel? = null
 
@@ -43,6 +48,9 @@ class IDopenSettingsConfigurable : Configurable {
 
         providerTypeField.isEditable = false
         providerTypeField.toolTipText = "v1 仅支持 OpenAI-compatible chat completions。"
+
+        modelField.isEditable = true
+        modelField.preferredSize = Dimension(240, 32)
 
         shellPathField.addBrowseFolderListener(
             "选择 Shell",
@@ -61,30 +69,31 @@ class IDopenSettingsConfigurable : Configurable {
         headerPanel.add(JBScrollPane(headersArea), BorderLayout.CENTER)
         headerPanel.preferredSize = Dimension(400, 140)
 
-        val presetPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
+        val actionPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         val nimPresetButton = JButton("应用 NVIDIA NIM 预设")
         val testConnectionButton = JButton("测试连接")
         val fetchModelsButton = JButton("获取模型")
         val clearButton = JButton("清空请求头")
-        presetPanel.add(nimPresetButton)
-        presetPanel.add(testConnectionButton)
-        presetPanel.add(fetchModelsButton)
-        presetPanel.add(clearButton)
+        actionPanel.add(nimPresetButton)
+        actionPanel.add(testConnectionButton)
+        actionPanel.add(fetchModelsButton)
+        actionPanel.add(clearButton)
 
         nimPresetButton.addActionListener {
             if (baseUrlField.text.isBlank()) {
                 baseUrlField.text = "https://integrate.api.nvidia.com/v1"
             }
-            if (modelField.text.isBlank()) {
-                modelField.text = "meta/llama-3.1-70b-instruct"
+            if (selectedModel().isBlank()) {
+                setSelectedModel("meta/llama-3.1-70b-instruct")
             }
             providerTypeField.text = "OpenAI-compatible"
             if (shellPathField.text.isBlank()) {
                 shellPathField.text = IDopenSettingsState.defaultShellPath()
             }
+            enableToolsCheckBox.isSelected = false
             Messages.showInfoMessage(
                 panel,
-                "已应用 NVIDIA NIM 预设，请确认接口地址、API Key 和模型名是否匹配你的部署。",
+                "已应用 NVIDIA NIM 预设。默认关闭工具调用，兼容性更稳；确认模型支持后再开启。",
                 "IDopen",
             )
         }
@@ -94,6 +103,9 @@ class IDopenSettingsConfigurable : Configurable {
             runProviderAction("测试连接") {
                 client.testConnection(config)
             }.onSuccess { result ->
+                if (result.models.isNotEmpty()) {
+                    replaceModelOptions(result.models)
+                }
                 val sampleModels = result.models.take(5)
                 val modelHint = if (sampleModels.isEmpty()) "" else "\n示例模型：${sampleModels.joinToString("、")}"
                 Messages.showInfoMessage(panel, result.message + modelHint, "连接测试")
@@ -107,18 +119,18 @@ class IDopenSettingsConfigurable : Configurable {
             runProviderAction("获取模型") {
                 client.listModels(config)
             }.onSuccess { models ->
-                val parent = panel ?: return@onSuccess
                 if (models.isEmpty()) {
-                    Messages.showWarningDialog(parent, "接口已连通，但没有返回可选模型。", "获取模型")
+                    Messages.showWarningDialog("接口已连通，但没有返回可选模型。", "获取模型")
                     return@onSuccess
                 }
-                val selectedModel = modelField.text.takeIf { it in models } ?: models.first()
-                modelField.text = selectedModel
-                val preview = models.take(20).joinToString("\n")
-                val suffix = if (models.size > 20) "\n..." else ""
+                replaceModelOptions(models)
+                val selected = selectedModel().takeIf { it in models } ?: models.first()
+                setSelectedModel(selected)
+                val preview = models.take(12).joinToString("\n")
+                val suffix = if (models.size > 12) "\n..." else ""
                 Messages.showInfoMessage(
-                    parent,
-                    "已获取 ${models.size} 个模型，并已填入：$selectedModel\n\n$preview$suffix",
+                    panel,
+                    "已获取 ${models.size} 个模型，已填入下拉列表并选中：$selected\n\n$preview$suffix",
                     "获取模型",
                 )
             }.onFailure { error ->
@@ -130,6 +142,8 @@ class IDopenSettingsConfigurable : Configurable {
             headersArea.text = ""
         }
 
+        enableToolsCheckBox.toolTipText = "启用后会向模型发送 tools/tool_choice。NVIDIA NIM 的部分模型不支持。"
+
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent("提供方类型：", providerTypeField)
             .addLabeledComponent("接口地址：", baseUrlField)
@@ -137,7 +151,8 @@ class IDopenSettingsConfigurable : Configurable {
             .addLabeledComponent("默认模型：", modelField)
             .addLabeledComponent("Shell 可执行文件：", shellPathField)
             .addLabeledComponent("命令超时（秒）：", timeoutField)
-            .addComponent(presetPanel)
+            .addComponent(enableToolsCheckBox)
+            .addComponent(actionPanel)
             .addComponent(headerPanel)
             .addComponentFillVertically(JPanel(), 0)
             .panel
@@ -149,30 +164,36 @@ class IDopenSettingsConfigurable : Configurable {
     override fun isModified(): Boolean {
         return baseUrlField.text.trim() != settings.baseUrl ||
             String(apiKeyField.password) != settings.apiKey ||
-            modelField.text.trim() != settings.defaultModel ||
+            selectedModel() != settings.defaultModel ||
             shellPathField.text.trim() != settings.shellPath ||
             (timeoutField.value as Int) != settings.commandTimeoutSeconds ||
-            headersArea.text.trim() != settings.headersText.trim()
+            headersArea.text.trim() != settings.headersText.trim() ||
+            enableToolsCheckBox.isSelected != settings.enableToolCalling ||
+            modelOptions != settings.knownModels
     }
 
     override fun apply() {
         settings.providerType = "OPENAI_COMPATIBLE"
         settings.baseUrl = baseUrlField.text.trim()
         settings.apiKey = String(apiKeyField.password)
-        settings.defaultModel = modelField.text.trim()
+        settings.defaultModel = selectedModel()
+        settings.knownModels = modelOptions.toMutableList()
         settings.shellPath = shellPathField.text.trim().ifBlank { IDopenSettingsState.defaultShellPath() }
         settings.commandTimeoutSeconds = timeoutField.value as Int
         settings.headersText = headersArea.text.trim()
+        settings.enableToolCalling = enableToolsCheckBox.isSelected
     }
 
     override fun reset() {
         providerTypeField.text = "OpenAI-compatible"
         baseUrlField.text = settings.baseUrl
         apiKeyField.text = settings.apiKey
-        modelField.text = settings.defaultModel
+        replaceModelOptions(settings.knownModels)
+        setSelectedModel(settings.defaultModel)
         shellPathField.text = settings.shellPath.ifBlank { IDopenSettingsState.defaultShellPath() }
         timeoutField.value = settings.commandTimeoutSeconds
         headersArea.text = settings.headersText
+        enableToolsCheckBox.isSelected = settings.enableToolCalling
     }
 
     override fun disposeUIResources() {
@@ -183,7 +204,7 @@ class IDopenSettingsConfigurable : Configurable {
         val validation = ProviderConfigSupport.fromInputs(
             baseUrl = baseUrlField.text,
             apiKey = String(apiKeyField.password),
-            model = modelField.text,
+            model = selectedModel(),
             headersText = headersArea.text,
             requireModel = requireModel,
         )
@@ -191,6 +212,35 @@ class IDopenSettingsConfigurable : Configurable {
             Messages.showErrorDialog(panel, validation.error, "配置不完整")
         }
         return validation.config
+    }
+
+    private fun selectedModel(): String {
+        val editorItem = modelField.editor.item?.toString()?.trim().orEmpty()
+        return editorItem.ifBlank { modelField.selectedItem?.toString()?.trim().orEmpty() }
+    }
+
+    private fun setSelectedModel(model: String) {
+        if (model.isBlank()) {
+            modelField.editor.item = ""
+            return
+        }
+        if (model !in modelOptions) {
+            modelOptions += model
+            syncModelList()
+        }
+        modelField.selectedItem = model
+        modelField.editor.item = model
+    }
+
+    private fun replaceModelOptions(models: List<String>) {
+        modelOptions.clear()
+        modelOptions.addAll(models.distinct())
+        syncModelList()
+    }
+
+    private fun syncModelList() {
+        modelField.model = CollectionComboBoxModel(modelOptions.toMutableList(), selectedModel().takeIf { it.isNotBlank() })
+        modelField.isEditable = true
     }
 
     private fun <T> runProviderAction(title: String, action: () -> T): Result<T> {

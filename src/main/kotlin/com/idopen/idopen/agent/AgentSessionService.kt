@@ -28,10 +28,11 @@ class AgentSessionService(private val project: Project) {
     private var currentRun: Future<*>? = null
 
     init {
-        val systemMessage = ConversationMessage.System(systemPrompt())
-        history += systemMessage
-        val entry = TranscriptEntry.System(nextId("system"), "IDopen 已就绪。请先配置 OpenAI-compatible 接口，然后开始对话。")
-        transcript += entry
+        history += ConversationMessage.System(systemPrompt())
+        transcript += TranscriptEntry.System(
+            nextId("system"),
+            "IDopen 已就绪。请先配置 OpenAI-compatible 接口，然后开始对话。",
+        )
     }
 
     fun sendUserMessage(text: String, attachments: List<AttachmentContext> = emptyList()) {
@@ -90,12 +91,14 @@ class AgentSessionService(private val project: Project) {
     }
 
     private fun agentLoop() {
-        val provider = ProviderConfigSupport.fromSettings()
+        val settings = IDopenSettingsState.getInstance()
+        val provider = ProviderConfigSupport.fromSettings(settings)
         if (provider.error != null) {
             emitFailure(provider.error)
             return
         }
         val config = provider.config ?: return
+        val toolDefinitions = if (settings.enableToolCalling) tools.definitions() else emptyList()
 
         repeat(8) {
             if (Thread.currentThread().isInterrupted) return
@@ -108,7 +111,7 @@ class AgentSessionService(private val project: Project) {
                 OpenAICompatibleClient.ChatRequest(
                     providerConfig = config,
                     messages = history.toList(),
-                    tools = tools.definitions(),
+                    tools = toolDefinitions,
                 ),
             ) { delta ->
                 assistantEntry.text += delta
@@ -122,6 +125,11 @@ class AgentSessionService(private val project: Project) {
 
             if (result.toolCalls.isEmpty()) {
                 emit(SessionEvent.RunCompleted("助手回复完成。"))
+                return
+            }
+
+            if (!settings.enableToolCalling) {
+                emitFailure("当前模型未启用工具调用，但返回了工具请求。")
                 return
             }
 

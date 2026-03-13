@@ -14,9 +14,11 @@ class IDopenSettingsState : PersistentStateComponent<IDopenSettingsState> {
     var baseUrl: String = ""
     var apiKey: String = ""
     var defaultModel: String = ""
+    var knownModels: MutableList<String> = mutableListOf()
     var headersText: String = ""
     var shellPath: String = defaultShellPath()
     var commandTimeoutSeconds: Int = 120
+    var enableToolCalling: Boolean = false
 
     override fun getState(): IDopenSettingsState = this
 
