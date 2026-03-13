@@ -17,7 +17,9 @@ data class ProviderConfig(
 
 data class AttachmentContext(
     val label: String,
-    val content: String,
+    val reference: String = label,
+    val resolvedContent: String? = null,
+    val content: String? = resolvedContent,
 )
 
 data class ToolCall(

@@ -42,21 +42,20 @@ class AgentSessionService(private val project: Project) {
             return
         }
 
-        val rendered = buildString {
-            appendLine(text.trim())
-            if (attachments.isNotEmpty()) {
-                appendLine()
-                attachments.forEach { attachment ->
-                    appendLine("### ${attachment.label}")
-                    appendLine(attachment.content.trim())
-                    appendLine()
-                }
-            }
-        }.trim()
+        val settings = IDopenSettingsState.getInstance()
+        val trimmedText = text.trim()
 
-        val entry = TranscriptEntry.User(nextId("user"), rendered)
+        if (attachments.isNotEmpty()) {
+            val attachmentSummary = buildAttachmentSummary(attachments)
+            val attachmentEntry = TranscriptEntry.System(nextId("attachment"), attachmentSummary)
+            transcript += attachmentEntry
+            emit(SessionEvent.EntryAdded(attachmentEntry))
+            history += ConversationMessage.System(buildAttachmentPrompt(attachments, settings.enableToolCalling))
+        }
+
+        val entry = TranscriptEntry.User(nextId("user"), trimmedText)
         transcript += entry
-        history += ConversationMessage.User(rendered)
+        history += ConversationMessage.User(trimmedText)
         emit(SessionEvent.EntryAdded(entry))
         startRun()
     }
@@ -161,6 +160,44 @@ class AgentSessionService(private val project: Project) {
         }
 
         emitFailure("已达到最大工具调用轮数，任务已停止。")
+    }
+
+    private fun buildAttachmentSummary(attachments: List<AttachmentContext>): String {
+        return buildString {
+            appendLine("已附带 IDE 上下文：")
+            attachments.forEach { attachment ->
+                append("- ")
+                appendLine(attachment.reference)
+            }
+        }.trim()
+    }
+
+    private fun buildAttachmentPrompt(
+        attachments: List<AttachmentContext>,
+        toolCallingEnabled: Boolean,
+    ): String {
+        return if (toolCallingEnabled) {
+            buildString {
+                appendLine("Attached IDE context references:")
+                attachments.forEach { attachment ->
+                    appendLine("- ${attachment.reference}")
+                }
+                appendLine("Use the IDE tools to inspect the exact code before answering.")
+            }.trim()
+        } else {
+            buildString {
+                appendLine("Attached IDE context resolved by the plugin:")
+                attachments.forEach { attachment ->
+                    appendLine("### ${attachment.label}")
+                    appendLine(attachment.reference)
+                    val content = (attachment.resolvedContent ?: attachment.content).orEmpty().trim()
+                    if (content.isNotBlank()) {
+                        appendLine(content)
+                    }
+                    appendLine()
+                }
+            }.trim()
+        }
     }
 
     private fun requestApproval(request: ApprovalRequest): CompletableFuture<Boolean> {
