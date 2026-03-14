@@ -443,34 +443,24 @@ class IDopenToolWindowPanel(private val project: Project) {
                 codeBlock = false,
             )
 
-            is TranscriptEntry.ToolCall -> addMessageCard(
+            is TranscriptEntry.ToolCall -> addToolEventRow(
                 id = entry.id,
                 stage = "工具",
                 title = entry.toolName,
                 subtitle = "参数",
                 text = entry.argumentsJson,
                 createdAt = entry.createdAt,
-                background = Palette.TOOL_BG,
                 accent = Palette.TOOL_ACCENT,
-                collapsible = true,
-                startCollapsed = true,
-                alignRight = false,
-                codeBlock = true,
             )
 
-            is TranscriptEntry.ToolResult -> addMessageCard(
+            is TranscriptEntry.ToolResult -> addToolEventRow(
                 id = entry.id,
                 stage = if (entry.success) "结果" else "结果/错误",
                 title = entry.toolName,
                 subtitle = if (entry.success) "已完成" else "失败",
                 text = entry.output,
                 createdAt = entry.createdAt,
-                background = Palette.TOOL_BG,
-                accent = Palette.TOOL_ACCENT,
-                collapsible = true,
-                startCollapsed = true,
-                alignRight = false,
-                codeBlock = true,
+                accent = if (entry.success) Palette.TOOL_ACCENT else Palette.ERROR_ACCENT,
             )
 
             is TranscriptEntry.Error -> addMessageCard(
@@ -653,6 +643,122 @@ class IDopenToolWindowPanel(private val project: Project) {
         transcriptPanel.add(wrapCardRow(card, alignRight))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 8)))
         messageAreas[id] = body
+    }
+
+    private fun addToolEventRow(
+        id: String,
+        stage: String,
+        title: String,
+        subtitle: String?,
+        text: String,
+        createdAt: Instant,
+        accent: Color,
+    ) {
+        if (messageAreas.containsKey(id)) return
+
+        val row = JPanel(BorderLayout(0, 6))
+        row.maximumSize = Dimension(620, Int.MAX_VALUE)
+        row.isOpaque = false
+        row.border = BorderFactory.createEmptyBorder(0, 2, 0, 0)
+
+        val header = JPanel(BorderLayout())
+        header.isOpaque = false
+        header.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 2, 0, 0, accent),
+            BorderFactory.createEmptyBorder(2, 10, 2, 0),
+        )
+
+        val left = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
+        left.isOpaque = false
+        left.add(createMiniTag(stage, accent))
+        val titleLabel = JBLabel(title)
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
+        left.add(titleLabel)
+        if (!subtitle.isNullOrBlank()) {
+            val subtitleLabel = JBLabel(subtitle)
+            subtitleLabel.foreground = JBColor.GRAY
+            left.add(subtitleLabel)
+        }
+
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
+        right.isOpaque = false
+        val timeLabel = JBLabel(formatTime(createdAt))
+        timeLabel.foreground = JBColor.GRAY
+        val toggle = JButton("展开")
+        toggle.margin = JBInsets(2, 8, 2, 8)
+        right.add(timeLabel)
+        right.add(toggle)
+
+        val pagination = PaginationState.create(text)
+        val body = JBTextArea(pagination?.currentPageText() ?: text)
+        body.isEditable = false
+        body.lineWrap = false
+        body.wrapStyleWord = false
+        body.font = Font(Font.MONOSPACED, Font.PLAIN, body.font.size)
+        body.background = Palette.CODE_BG
+        body.foreground = Palette.CODE_FG
+        body.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Palette.CODE_BORDER),
+            BorderFactory.createEmptyBorder(8, 10, 8, 10),
+        )
+
+        val content = JPanel(BorderLayout(0, 6))
+        content.isOpaque = false
+        content.border = BorderFactory.createEmptyBorder(0, 18, 0, 0)
+        content.isVisible = false
+
+        val contentActions = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
+        contentActions.isOpaque = false
+        pagination?.let { state ->
+            val pageLabel = JBLabel(state.pageLabel())
+            pageLabel.foreground = JBColor.GRAY
+            val prevButton = JButton("上一页")
+            val nextButton = JButton("下一页")
+            prevButton.margin = JBInsets(2, 8, 2, 8)
+            nextButton.margin = JBInsets(2, 8, 2, 8)
+            val refreshPage = {
+                body.text = state.currentPageText()
+                pageLabel.text = state.pageLabel()
+                prevButton.isEnabled = state.hasPrevious()
+                nextButton.isEnabled = state.hasNext()
+            }
+            prevButton.addActionListener {
+                state.previous()
+                refreshPage()
+            }
+            nextButton.addActionListener {
+                state.next()
+                refreshPage()
+            }
+            refreshPage()
+            contentActions.add(pageLabel)
+            contentActions.add(prevButton)
+            contentActions.add(nextButton)
+        }
+        val copyButton = JButton("复制")
+        copyButton.margin = JBInsets(2, 8, 2, 8)
+        copyButton.addActionListener { copyToClipboard(text) }
+        contentActions.add(copyButton)
+        content.add(contentActions, BorderLayout.NORTH)
+        content.add(body, BorderLayout.CENTER)
+
+        toggle.addActionListener {
+            val expanded = !content.isVisible
+            content.isVisible = expanded
+            toggle.text = if (expanded) "收起" else "展开"
+            transcriptPanel.revalidate()
+            transcriptPanel.repaint()
+        }
+
+        header.add(left, BorderLayout.WEST)
+        header.add(right, BorderLayout.EAST)
+        row.add(header, BorderLayout.NORTH)
+        row.add(content, BorderLayout.CENTER)
+
+        transcriptPanel.add(wrapCardRow(row, false))
+        transcriptPanel.add(Box.createRigidArea(Dimension(0, 4)))
+        messageAreas[id] = body
+        collapsibleBodies[id] = content
     }
 
     private fun addApprovalCard(entry: TranscriptEntry.Approval) {
