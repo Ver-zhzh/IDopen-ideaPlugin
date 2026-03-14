@@ -200,7 +200,8 @@ class AgentSessionService(private val project: Project) {
         }
 
         val config = provider.config ?: return
-        val toolDefinitions = resolveToolDefinitions(session, config, settings, roundId)
+        val runtimeProfile = resolveRuntimeProfile(session, config, settings, roundId)
+        val toolDefinitions = if (runtimeProfile.includeTools) tools.definitions() else emptyList()
         var totalToolCalls = 0
 
         repeat(if (unlimitedUsage) Int.MAX_VALUE else MAX_AGENT_TURNS) { turnIndex ->
@@ -217,12 +218,20 @@ class AgentSessionService(private val project: Project) {
             var assistantEntry: TranscriptEntry.Assistant? = null
             var stepToolCalls = 0
             var stepSucceeded = true
+            val turnPlan = AgentPlanningSupport.buildPlan(
+                snapshot = snapshot(session),
+                roundId = roundId,
+                userRequest = latestRoundUserText(session, roundId),
+                availableTools = toolDefinitions,
+                runtimeProfile = runtimeProfile,
+            )
             val result = client.streamChat(
                 OpenAICompatibleClient.ChatRequest(
                     providerConfig = config,
-                    messages = ContextWindowSupport.compact(
-                        messages = session.history.toList(),
-                        stepGroups = session.stepGroups,
+                    messages = buildTurnMessages(
+                        session = session,
+                        roundId = roundId,
+                        turnPlan = turnPlan,
                     ),
                     tools = toolDefinitions,
                 ),
@@ -266,7 +275,7 @@ class AgentSessionService(private val project: Project) {
                 return
             }
 
-            if (toolDefinitions.isEmpty()) {
+            if (!runtimeProfile.includeTools) {
                 emitStepFinish(session, stepIndex, "tool-disabled", 0, false, roundId)
                 emitFailure(session, "当前模型未启用工具调用，但返回了工具请求。", roundId)
                 return
@@ -334,27 +343,32 @@ class AgentSessionService(private val project: Project) {
         }
     }
 
-    private fun resolveToolDefinitions(
+    private fun resolveRuntimeProfile(
         session: SessionState,
         config: ProviderConfig,
         settings: IDopenSettingsState,
         roundId: String?,
-    ): List<ToolDefinition> {
-        return when (resolveToolCallingMode(settings)) {
-            ToolCallingMode.DISABLED -> emptyList()
-            ToolCallingMode.ENABLED -> tools.definitions()
-            ToolCallingMode.AUTO -> {
-                val capability = capabilityCache.computeIfAbsent(capabilityKey(config)) {
-                    client.detectToolCapability(config)
+    ): ProviderRuntimeProfile {
+        val profile = ProviderRuntimeSupport.resolveProfile(
+            config = config,
+            settings = settings,
+            capabilityLookup = { candidate ->
+                capabilityCache.computeIfAbsent(capabilityKey(candidate)) {
+                    client.detectToolCapability(candidate)
                 }
-                if (capability.supportsToolCalling) {
-                    tools.definitions()
-                } else {
-                    emitAutoModeNotice(session, capability, roundId)
-                    emptyList()
-                }
-            }
+            },
+        )
+        if (!profile.includeTools && resolveToolCallingMode(settings) == ToolCallingMode.AUTO) {
+            emitAutoModeNotice(
+                session = session,
+                capability = ToolCapability(
+                    supportsToolCalling = profile.supportsToolCalling,
+                    detail = profile.capabilityDetail,
+                ),
+                roundId = roundId,
+            )
         }
+        return profile
     }
 
     private fun emitAutoModeNotice(session: SessionState, capability: ToolCapability, roundId: String?) {
@@ -530,6 +544,40 @@ class AgentSessionService(private val project: Project) {
             stepGroups = session.stepGroups.toList(),
             steps = session.steps.toList(),
         )
+    }
+
+    private fun buildTurnMessages(
+        session: SessionState,
+        roundId: String,
+        turnPlan: AgentTurnPlan,
+    ): List<ConversationMessage> {
+        val compacted = ContextWindowSupport.compact(
+            messages = session.history.toList(),
+            steps = session.steps,
+        )
+        val planMessages = turnPlan.asSystemMessages(roundId)
+        if (planMessages.isEmpty()) return compacted
+
+        val leadingSystem = compacted.firstOrNull() as? ConversationMessage.System
+        return buildList {
+            if (leadingSystem != null) {
+                add(leadingSystem)
+                addAll(planMessages)
+                addAll(compacted.drop(1))
+            } else {
+                addAll(planMessages)
+                addAll(compacted)
+            }
+        }
+    }
+
+    private fun latestRoundUserText(session: SessionState, roundId: String): String {
+        return session.transcript
+            .asReversed()
+            .filterIsInstance<TranscriptEntry.User>()
+            .firstOrNull { it.roundId == roundId }
+            ?.text
+            .orEmpty()
     }
 
     private fun emitSnapshotChanged(session: SessionState) {

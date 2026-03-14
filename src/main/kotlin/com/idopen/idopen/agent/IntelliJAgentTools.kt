@@ -91,6 +91,10 @@ class IntelliJAgentTools(
                             "properties" to mapOf(
                                 "search" to mapOf("type" to "string"),
                                 "replace" to mapOf("type" to "string"),
+                                "occurrence" to mapOf("type" to "integer", "minimum" to 1),
+                                "replaceAll" to mapOf("type" to "boolean"),
+                                "before" to mapOf("type" to "string"),
+                                "after" to mapOf("type" to "string"),
                                 "startLine" to mapOf("type" to "integer", "minimum" to 1),
                                 "endLine" to mapOf("type" to "integer", "minimum" to 0),
                                 "newText" to mapOf("type" to "string"),
@@ -567,6 +571,10 @@ class IntelliJAgentTools(
             PatchEdit(
                 search = item.optionalText("search"),
                 replace = item.optionalText("replace"),
+                occurrence = item.optionalInt("occurrence"),
+                replaceAll = item.path("replaceAll").takeIf { !it.isMissingNode && !it.isNull }?.asBoolean(false) ?: false,
+                before = item.optionalText("before"),
+                after = item.optionalText("after"),
                 startLine = item.optionalInt("startLine"),
                 endLine = item.optionalInt("endLine"),
                 newText = item.optionalText("newText"),

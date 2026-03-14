@@ -84,6 +84,10 @@ data class ChatSessionSnapshot(
 data class PatchEdit(
     val search: String? = null,
     val replace: String? = null,
+    val occurrence: Int? = null,
+    val replaceAll: Boolean = false,
+    val before: String? = null,
+    val after: String? = null,
     val startLine: Int? = null,
     val endLine: Int? = null,
     val newText: String? = null,
@@ -169,6 +173,22 @@ data class SessionStep(
     val parts: List<SessionStepPart>,
 )
 
+sealed interface AssistantOutputPart {
+    data class Text(
+        val text: String,
+    ) : AssistantOutputPart
+
+    data class CodeBlock(
+        val code: String,
+        val language: String? = null,
+    ) : AssistantOutputPart
+
+    data class ListBlock(
+        val items: List<String>,
+        val ordered: Boolean,
+    ) : AssistantOutputPart
+}
+
 sealed interface SessionStepPart {
     data class Context(
         val summary: String,
@@ -180,30 +200,44 @@ sealed interface SessionStepPart {
         val createdAt: Instant,
     ) : SessionStepPart
 
-    data class Assistant(
+    data class AssistantResponse(
         val text: String,
+        val outputParts: List<AssistantOutputPart>,
         val createdAt: Instant,
     ) : SessionStepPart
 
-    data class Tool(
+    data class ToolCall(
         val callId: String,
         val toolName: String,
         val argumentsJson: String,
-        val state: ToolInvocationState,
         val title: String?,
+        val metadata: Map<String, String>,
+        val createdAt: Instant,
+        val startedAt: Instant?,
+    ) : SessionStepPart
+
+    data class ToolResult(
+        val callId: String,
+        val toolName: String,
+        val state: ToolInvocationState,
         val metadata: Map<String, String>,
         val output: String?,
         val success: Boolean?,
         val createdAt: Instant,
-        val startedAt: Instant?,
         val finishedAt: Instant?,
     ) : SessionStepPart
 
-    data class Approval(
+    data class ApprovalRequestPart(
+        val title: String,
+        val type: ApprovalRequest.Type,
+        val summary: String,
+        val createdAt: Instant,
+    ) : SessionStepPart
+
+    data class ApprovalDecision(
         val title: String,
         val type: ApprovalRequest.Type,
         val status: ApprovalRequest.Status,
-        val summary: String,
         val createdAt: Instant,
     ) : SessionStepPart
 

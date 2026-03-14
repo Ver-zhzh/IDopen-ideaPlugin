@@ -10,7 +10,7 @@ object ContextWindowSupport {
 
     fun compact(
         messages: List<ConversationMessage>,
-        stepGroups: List<SessionStepGroup> = emptyList(),
+        steps: List<SessionStep> = emptyList(),
     ): List<ConversationMessage> {
         if (messages.isEmpty()) return messages
 
@@ -36,7 +36,7 @@ object ContextWindowSupport {
         }
 
         val olderMessages = body.dropLast(recentMessages.size)
-        val summary = summarize(olderMessages, stepGroups, recentMessages)
+        val summary = summarize(olderMessages, steps, recentMessages)
         return buildList {
             if (leadingSystem != null) add(leadingSystem)
             if (summary.isNotBlank()) add(ConversationMessage.System(summary))
@@ -46,12 +46,12 @@ object ContextWindowSupport {
 
     private fun summarize(
         messages: List<ConversationMessage>,
-        stepGroups: List<SessionStepGroup>,
+        steps: List<SessionStep>,
         recentMessages: List<ConversationMessage>,
     ): String {
         if (messages.isEmpty()) return ""
         val recentRoundIds = recentMessages.mapNotNull { it.roundId }.toSet()
-        val groupedLines = summarizeGroups(stepGroups, recentRoundIds)
+        val groupedLines = summarizeSteps(steps, recentRoundIds)
         val fallbackLines = messages
             .filter { it.roundId == null || it.roundId !in recentRoundIds }
             .takeLast(SUMMARY_LINE_LIMIT)
@@ -68,19 +68,15 @@ object ContextWindowSupport {
         }.trim()
     }
 
-    private fun summarizeGroups(
-        stepGroups: List<SessionStepGroup>,
+    private fun summarizeSteps(
+        steps: List<SessionStep>,
         recentRoundIds: Set<String>,
     ): List<String> {
-        if (stepGroups.isEmpty()) return emptyList()
-        return stepGroups
+        if (steps.isEmpty()) return emptyList()
+        return steps
             .filter { it.roundId !in recentRoundIds }
             .takeLast(SUMMARY_GROUP_LIMIT)
-            .mapNotNull(::summarizeGroup)
-    }
-
-    private fun summarizeGroup(group: SessionStepGroup): String? {
-        return SessionStepSupport.summarize(group)
+            .mapNotNull { it.summary }
     }
 
     private fun summarizeMessage(message: ConversationMessage): String? {

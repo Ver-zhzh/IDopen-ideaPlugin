@@ -125,7 +125,7 @@ object SessionStepSupport {
             finishedAt = group.finished?.createdAt,
             reason = group.finished?.reason,
             toolCalls = group.finished?.toolCalls ?: group.toolEntries.size,
-            parts = group.entries.mapNotNull(::toPart),
+            parts = buildProtocolParts(group),
         )
     }
 
@@ -155,30 +155,13 @@ object SessionStepSupport {
                 text = entry.text,
                 createdAt = entry.createdAt,
             )
-            is TranscriptEntry.Assistant -> SessionStepPart.Assistant(
+            is TranscriptEntry.Assistant -> SessionStepPart.AssistantResponse(
                 text = entry.text,
+                outputParts = AssistantResponseSupport.partition(entry.text),
                 createdAt = entry.createdAt,
             )
-            is TranscriptEntry.ToolInvocation -> SessionStepPart.Tool(
-                callId = entry.callId,
-                toolName = entry.toolName,
-                argumentsJson = entry.argumentsJson,
-                state = entry.state,
-                title = entry.title,
-                metadata = entry.metadata,
-                output = entry.output,
-                success = entry.success,
-                createdAt = entry.createdAt,
-                startedAt = entry.startedAt,
-                finishedAt = entry.finishedAt,
-            )
-            is TranscriptEntry.Approval -> SessionStepPart.Approval(
-                title = entry.request.title,
-                type = entry.request.type,
-                status = entry.request.status,
-                summary = approvalSummary(entry.request.payload),
-                createdAt = entry.createdAt,
-            )
+            is TranscriptEntry.ToolInvocation -> null
+            is TranscriptEntry.Approval -> null
             is TranscriptEntry.Error -> SessionStepPart.Error(
                 message = entry.message,
                 createdAt = entry.createdAt,
@@ -191,6 +174,61 @@ object SessionStepSupport {
             is TranscriptEntry.StepFinish -> null
             is TranscriptEntry.ToolCall -> null
             is TranscriptEntry.ToolResult -> null
+        }
+    }
+
+    fun buildProtocolParts(group: SessionStepGroup): List<SessionStepPart> {
+        return group.entries.flatMap { entry ->
+            when (entry) {
+                is TranscriptEntry.ToolInvocation -> buildList {
+                    add(
+                        SessionStepPart.ToolCall(
+                            callId = entry.callId,
+                            toolName = entry.toolName,
+                            argumentsJson = entry.argumentsJson,
+                            title = entry.title,
+                            metadata = entry.metadata,
+                            createdAt = entry.createdAt,
+                            startedAt = entry.startedAt,
+                        ),
+                    )
+                    if (entry.output != null || entry.success != null || entry.state in setOf(ToolInvocationState.COMPLETED, ToolInvocationState.ERROR)) {
+                        add(
+                            SessionStepPart.ToolResult(
+                                callId = entry.callId,
+                                toolName = entry.toolName,
+                                state = entry.state,
+                                metadata = entry.metadata,
+                                output = entry.output,
+                                success = entry.success,
+                                createdAt = entry.createdAt,
+                                finishedAt = entry.finishedAt,
+                            ),
+                        )
+                    }
+                }
+                is TranscriptEntry.Approval -> buildList {
+                    add(
+                        SessionStepPart.ApprovalRequestPart(
+                            title = entry.request.title,
+                            type = entry.request.type,
+                            summary = approvalSummary(entry.request.payload),
+                            createdAt = entry.createdAt,
+                        ),
+                    )
+                    if (entry.request.status != ApprovalRequest.Status.PENDING) {
+                        add(
+                            SessionStepPart.ApprovalDecision(
+                                title = entry.request.title,
+                                type = entry.request.type,
+                                status = entry.request.status,
+                                createdAt = entry.createdAt,
+                            ),
+                        )
+                    }
+                }
+                else -> listOfNotNull(toPart(entry))
+            }
         }
     }
 

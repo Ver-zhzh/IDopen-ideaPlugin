@@ -102,7 +102,7 @@ class ContextWindowSupportTest {
             )
         }
 
-        val compacted = ContextWindowSupport.compact(messages, stepGroups)
+        val compacted = ContextWindowSupport.compact(messages, SessionStepSupport.buildSteps(stepGroups))
         val summary = assertIs<ConversationMessage.System>(compacted[1])
 
         assertTrue(summary.content.contains("Step 1"))
