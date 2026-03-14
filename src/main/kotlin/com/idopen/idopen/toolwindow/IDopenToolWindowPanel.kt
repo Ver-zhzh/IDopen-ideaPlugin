@@ -57,6 +57,7 @@ import javax.swing.JComboBox
 import javax.swing.JEditorPane
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.ScrollPaneConstants
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import javax.swing.text.DefaultCaret
@@ -102,6 +103,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         transcriptScrollPane.border = BorderFactory.createEmptyBorder()
         transcriptScrollPane.viewport.background = Palette.CANVAS
         transcriptScrollPane.verticalScrollBar.unitIncrement = 18
+        transcriptScrollPane.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         (transcriptScrollPane.verticalScrollBar as? JComponent)?.border = BorderFactory.createEmptyBorder()
 
         inputArea.lineWrap = true
@@ -840,8 +842,8 @@ class IDopenToolWindowPanel(private val project: Project) {
         val pagination = PaginationState.create(text)
         val body = JBTextArea(pagination?.currentPageText() ?: text)
         body.isEditable = false
-        body.lineWrap = false
-        body.wrapStyleWord = false
+        body.lineWrap = true
+        body.wrapStyleWord = true
         body.font = Font(Font.MONOSPACED, Font.PLAIN, body.font.size)
         body.background = Palette.CODE_BG
         body.foreground = Palette.CODE_FG
@@ -1274,6 +1276,8 @@ class IDopenToolWindowPanel(private val project: Project) {
             isOpaque = false
             viewport.isOpaque = true
             viewport.background = background
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
             horizontalScrollBar.unitIncrement = 16
             verticalScrollBar.unitIncrement = 18
             preferredSize = Dimension(0, preferredHeight)
