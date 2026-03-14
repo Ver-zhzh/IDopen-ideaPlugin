@@ -1265,7 +1265,6 @@ class IDopenToolWindowPanel(private val project: Project) {
             row.add(card)
             row.add(Box.createHorizontalGlue())
         }
-        row.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height)
         return row
     }
 
