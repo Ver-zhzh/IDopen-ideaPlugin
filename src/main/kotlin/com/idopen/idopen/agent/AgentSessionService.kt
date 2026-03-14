@@ -47,11 +47,13 @@ class AgentSessionService(private val project: Project) {
         val restored = sessionStore.restore()
         if (restored != null && restored.sessions.isNotEmpty()) {
             restored.sessions.forEach { persisted ->
+                val stepGroups = SessionStepSupport.group(persisted.transcript)
                 sessions[persisted.id] = SessionState(
                     id = persisted.id,
                     title = persisted.title,
                     transcript = persisted.transcript.toMutableList(),
-                    stepGroups = SessionStepSupport.group(persisted.transcript),
+                    stepGroups = stepGroups,
+                    steps = SessionStepSupport.buildSteps(stepGroups),
                     history = persisted.history.toMutableList(),
                     updatedAt = persisted.updatedAt,
                     lastCapabilityNotice = persisted.lastCapabilityNotice,
@@ -136,6 +138,8 @@ class AgentSessionService(private val project: Project) {
     fun getTranscript(): List<TranscriptEntry> = currentSession().transcript.toList()
 
     fun getStepGroups(): List<SessionStepGroup> = currentSession().stepGroups.toList()
+
+    fun getSteps(): List<SessionStep> = currentSession().steps.toList()
 
     fun getCurrentSessionSnapshot(): ChatSessionSnapshot = snapshot(currentSession())
 
@@ -403,7 +407,10 @@ class AgentSessionService(private val project: Project) {
             ApprovalRequest.Status.REJECTED
         }
         persistSessions()
-        session(pending.sessionId)?.let(::emitSnapshotChanged)
+        session(pending.sessionId)?.let {
+            it.steps = SessionStepSupport.buildSteps(it.stepGroups)
+            emitSnapshotChanged(it)
+        }
         pending.future.complete(approved)
     }
 
@@ -432,6 +439,7 @@ class AgentSessionService(private val project: Project) {
     private fun appendEntry(session: SessionState, entry: TranscriptEntry) {
         session.transcript += entry
         session.stepGroups = SessionStepSupport.append(session.stepGroups, entry)
+        session.steps = SessionStepSupport.buildSteps(session.stepGroups)
         session.updatedAt = Instant.now()
         persistSessions()
     }
@@ -442,6 +450,7 @@ class AgentSessionService(private val project: Project) {
     }
 
     private fun emitEntryUpdated(session: SessionState, entry: TranscriptEntry) {
+        session.steps = SessionStepSupport.buildSteps(session.stepGroups)
         session.updatedAt = Instant.now()
         persistSessions()
         emit(SessionEvent.EntryUpdated(entry))
@@ -495,6 +504,7 @@ class AgentSessionService(private val project: Project) {
             title = title,
             transcript = mutableListOf(),
             stepGroups = emptyList(),
+            steps = emptyList(),
             history = mutableListOf(),
         )
         session.history += ConversationMessage.System(systemPrompt())
@@ -518,6 +528,7 @@ class AgentSessionService(private val project: Project) {
             running = currentRunSessionId == session.id && isRunning(),
             transcript = session.transcript.toList(),
             stepGroups = session.stepGroups.toList(),
+            steps = session.steps.toList(),
         )
     }
 
@@ -581,6 +592,7 @@ class AgentSessionService(private val project: Project) {
         var title: String,
         val transcript: MutableList<TranscriptEntry>,
         var stepGroups: List<SessionStepGroup>,
+        var steps: List<SessionStep>,
         val history: MutableList<ConversationMessage>,
         var updatedAt: Instant = Instant.now(),
         var lastCapabilityNotice: String? = null,

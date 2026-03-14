@@ -78,6 +78,7 @@ data class ChatSessionSnapshot(
     val running: Boolean,
     val transcript: List<TranscriptEntry>,
     val stepGroups: List<SessionStepGroup>,
+    val steps: List<SessionStep>,
 )
 
 data class PatchEdit(
@@ -153,6 +154,68 @@ enum class ToolInvocationState {
     RUNNING,
     COMPLETED,
     ERROR,
+}
+
+data class SessionStep(
+    val roundId: String,
+    val stepIndex: Int?,
+    val status: SessionStepStatus,
+    val title: String,
+    val summary: String?,
+    val startedAt: Instant?,
+    val finishedAt: Instant?,
+    val reason: String?,
+    val toolCalls: Int,
+    val parts: List<SessionStepPart>,
+)
+
+sealed interface SessionStepPart {
+    data class Context(
+        val summary: String,
+        val createdAt: Instant,
+    ) : SessionStepPart
+
+    data class User(
+        val text: String,
+        val createdAt: Instant,
+    ) : SessionStepPart
+
+    data class Assistant(
+        val text: String,
+        val createdAt: Instant,
+    ) : SessionStepPart
+
+    data class Tool(
+        val callId: String,
+        val toolName: String,
+        val argumentsJson: String,
+        val state: ToolInvocationState,
+        val title: String?,
+        val metadata: Map<String, String>,
+        val output: String?,
+        val success: Boolean?,
+        val createdAt: Instant,
+        val startedAt: Instant?,
+        val finishedAt: Instant?,
+    ) : SessionStepPart
+
+    data class Approval(
+        val title: String,
+        val type: ApprovalRequest.Type,
+        val status: ApprovalRequest.Status,
+        val summary: String,
+        val createdAt: Instant,
+    ) : SessionStepPart
+
+    data class Error(
+        val message: String,
+        val createdAt: Instant,
+    ) : SessionStepPart
+
+    data class System(
+        val message: String,
+        val createdAt: Instant,
+    ) : SessionStepPart
 }
 
 sealed interface TranscriptEntry {

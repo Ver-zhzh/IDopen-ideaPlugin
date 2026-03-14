@@ -32,9 +32,14 @@ data class SessionStepGroup(
 
 object SessionStepSupport {
     private const val SUMMARY_VALUE_LIMIT = 240
+    private const val TITLE_VALUE_LIMIT = 72
 
     fun group(transcript: List<TranscriptEntry>): List<SessionStepGroup> {
         return transcript.fold(emptyList(), ::append)
+    }
+
+    fun buildSteps(groups: List<SessionStepGroup>): List<SessionStep> {
+        return groups.map(::toStep)
     }
 
     fun append(groups: List<SessionStepGroup>, entry: TranscriptEntry): List<SessionStepGroup> {
@@ -109,11 +114,112 @@ object SessionStepSupport {
         }
     }
 
+    fun toStep(group: SessionStepGroup): SessionStep {
+        return SessionStep(
+            roundId = group.roundId,
+            stepIndex = group.stepIndex,
+            status = group.status,
+            title = title(group),
+            summary = summarize(group),
+            startedAt = group.started?.createdAt ?: group.entries.firstOrNull()?.createdAtOrNull(),
+            finishedAt = group.finished?.createdAt,
+            reason = group.finished?.reason,
+            toolCalls = group.finished?.toolCalls ?: group.toolEntries.size,
+            parts = group.entries.mapNotNull(::toPart),
+        )
+    }
+
+    private fun title(group: SessionStepGroup): String {
+        val candidate = sequenceOf(
+            group.userEntries.lastOrNull()?.text,
+            group.assistantEntries.lastOrNull()?.text,
+            group.toolEntries.firstOrNull()?.title,
+            group.toolEntries.firstOrNull()?.toolName,
+            group.approvalEntries.firstOrNull()?.request?.title,
+        )
+            .filterNotNull()
+            .map(::flatten)
+            .map { truncate(it, TITLE_VALUE_LIMIT) }
+            .firstOrNull { it.isNotBlank() }
+
+        return candidate ?: "Step ${group.stepIndex ?: "?"}"
+    }
+
+    private fun toPart(entry: TranscriptEntry): SessionStepPart? {
+        return when (entry) {
+            is TranscriptEntry.Context -> SessionStepPart.Context(
+                summary = entry.summary,
+                createdAt = entry.createdAt,
+            )
+            is TranscriptEntry.User -> SessionStepPart.User(
+                text = entry.text,
+                createdAt = entry.createdAt,
+            )
+            is TranscriptEntry.Assistant -> SessionStepPart.Assistant(
+                text = entry.text,
+                createdAt = entry.createdAt,
+            )
+            is TranscriptEntry.ToolInvocation -> SessionStepPart.Tool(
+                callId = entry.callId,
+                toolName = entry.toolName,
+                argumentsJson = entry.argumentsJson,
+                state = entry.state,
+                title = entry.title,
+                metadata = entry.metadata,
+                output = entry.output,
+                success = entry.success,
+                createdAt = entry.createdAt,
+                startedAt = entry.startedAt,
+                finishedAt = entry.finishedAt,
+            )
+            is TranscriptEntry.Approval -> SessionStepPart.Approval(
+                title = entry.request.title,
+                type = entry.request.type,
+                status = entry.request.status,
+                summary = approvalSummary(entry.request.payload),
+                createdAt = entry.createdAt,
+            )
+            is TranscriptEntry.Error -> SessionStepPart.Error(
+                message = entry.message,
+                createdAt = entry.createdAt,
+            )
+            is TranscriptEntry.System -> SessionStepPart.System(
+                message = entry.message,
+                createdAt = entry.createdAt,
+            )
+            is TranscriptEntry.StepStart -> null
+            is TranscriptEntry.StepFinish -> null
+            is TranscriptEntry.ToolCall -> null
+            is TranscriptEntry.ToolResult -> null
+        }
+    }
+
+    private fun approvalSummary(payload: ApprovalPayload): String {
+        return when (payload) {
+            is ApprovalPayload.Command -> "command: ${payload.command}"
+            is ApprovalPayload.Patch -> "patch: ${payload.filePath}"
+        }
+    }
+
     private fun flatten(value: String): String {
         return value.replace(Regex("\\s+"), " ").trim()
     }
 
-    private fun truncate(value: String): String {
-        return if (value.length <= SUMMARY_VALUE_LIMIT) value else value.take(SUMMARY_VALUE_LIMIT - 3) + "..."
+    private fun truncate(value: String, maxLength: Int = SUMMARY_VALUE_LIMIT): String {
+        return if (value.length <= maxLength) value else value.take(maxLength - 3) + "..."
+    }
+
+    private fun TranscriptEntry.createdAtOrNull() = when (this) {
+        is TranscriptEntry.User -> createdAt
+        is TranscriptEntry.Assistant -> createdAt
+        is TranscriptEntry.ToolCall -> createdAt
+        is TranscriptEntry.ToolResult -> createdAt
+        is TranscriptEntry.ToolInvocation -> createdAt
+        is TranscriptEntry.Approval -> createdAt
+        is TranscriptEntry.StepStart -> createdAt
+        is TranscriptEntry.StepFinish -> createdAt
+        is TranscriptEntry.Error -> createdAt
+        is TranscriptEntry.Context -> createdAt
+        is TranscriptEntry.System -> createdAt
     }
 }

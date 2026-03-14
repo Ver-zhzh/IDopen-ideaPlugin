@@ -3,6 +3,7 @@ package com.idopen.idopen.agent
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -133,5 +134,69 @@ class SessionStepSupportTest {
         assertEquals(listOf(ApprovalRequest.Type.COMMAND), group.approvalKinds)
         assertTrue(group.summary!!.contains("tools: read_project_tree"))
         assertTrue(group.summary!!.contains("approvals: command"))
+    }
+
+    @Test
+    fun `build steps converts transcript groups into ordered step parts`() {
+        val now = Instant.parse("2026-03-14T08:00:00Z")
+        val step = SessionStepSupport.buildSteps(
+            SessionStepSupport.group(
+                listOf(
+                    TranscriptEntry.Context("context-1", "current file README.md", now, "round-1"),
+                    TranscriptEntry.User("user-1", "check readme", now, "round-1"),
+                    TranscriptEntry.StepStart("step-start-1", 1, now, "round-1"),
+                    TranscriptEntry.Assistant("assistant-1", "I will inspect it", now, "round-1"),
+                    TranscriptEntry.ToolInvocation(
+                        id = "tool-1",
+                        callId = "call-1",
+                        toolName = "read_file",
+                        argumentsJson = """{"path":"README.md"}""",
+                        state = ToolInvocationState.COMPLETED,
+                        title = "read README",
+                        metadata = mapOf("path" to "README.md"),
+                        output = "content",
+                        success = true,
+                        createdAt = now,
+                        startedAt = now,
+                        finishedAt = now.plusSeconds(1),
+                        roundId = "round-1",
+                    ),
+                    TranscriptEntry.Approval(
+                        id = "approval-1",
+                        request = ApprovalRequest(
+                            id = "request-1",
+                            type = ApprovalRequest.Type.PATCH,
+                            title = "apply patch",
+                            payload = ApprovalPayload.Patch(
+                                filePath = "README.md",
+                                beforeText = "a",
+                                afterText = "b",
+                                explanation = "update intro",
+                            ),
+                            status = ApprovalRequest.Status.PENDING,
+                        ),
+                        createdAt = now,
+                        roundId = "round-1",
+                    ),
+                    TranscriptEntry.StepFinish("step-finish-1", 1, "final", 1, true, now.plusSeconds(2), "round-1"),
+                ),
+            ),
+        ).single()
+
+        assertEquals("round-1", step.roundId)
+        assertEquals(1, step.stepIndex)
+        assertEquals(SessionStepStatus.COMPLETED, step.status)
+        assertEquals("check readme", step.title)
+        assertEquals("final", step.reason)
+        assertEquals(1, step.toolCalls)
+        assertEquals(5, step.parts.size)
+        val contextPart = assertIs<SessionStepPart.Context>(step.parts[0])
+        assertEquals("current file README.md", contextPart.summary)
+        val toolPart = assertIs<SessionStepPart.Tool>(step.parts[3])
+        assertEquals(ToolInvocationState.COMPLETED, toolPart.state)
+        assertEquals("README.md", toolPart.metadata["path"])
+        val approvalPart = assertIs<SessionStepPart.Approval>(step.parts[4])
+        assertEquals(ApprovalRequest.Type.PATCH, approvalPart.type)
+        assertTrue(approvalPart.summary.contains("README.md"))
     }
 }
