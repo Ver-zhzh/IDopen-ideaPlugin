@@ -54,6 +54,7 @@ import javax.swing.DefaultListCellRenderer
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JComboBox
+import javax.swing.JEditorPane
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.KeyStroke
@@ -84,7 +85,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val trustModeCheckBox = JBCheckBox("信任模式")
     private val unlimitedUsageCheckBox = JBCheckBox("无限制使用")
     private val attachmentChips = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
-    private val messageAreas = linkedMapOf<String, JBTextArea>()
+    private val messageAreas = linkedMapOf<String, (String) -> Unit>()
     private val collapsibleBodies = linkedMapOf<String, JComponent>()
     private val emptyState = createEmptyState()
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
@@ -422,7 +423,7 @@ class IDopenToolWindowPanel(private val project: Project) {
                     }
                 }
                 is SessionEvent.EntryAdded -> renderEntry(event.entry)
-                is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.text = event.snapshot
+                is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.invoke(event.snapshot)
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")
                     refreshComposerAction()
@@ -638,22 +639,29 @@ class IDopenToolWindowPanel(private val project: Project) {
         right.add(timeLabel)
 
         val pagination = if (codeBlock) PaginationState.create(text) else null
-        val body = JBTextArea(pagination?.currentPageText() ?: text)
-        body.isEditable = false
-        body.lineWrap = !codeBlock
-        body.wrapStyleWord = true
-        body.background = if (bubbleStyle) card.background else background
-        body.border = BorderFactory.createEmptyBorder()
-        body.margin = JBInsets(0, 0, 0, 0)
+        val plainBody = JBTextArea(pagination?.currentPageText() ?: text)
+        plainBody.isEditable = false
+        plainBody.lineWrap = !codeBlock
+        plainBody.wrapStyleWord = true
+        plainBody.background = if (bubbleStyle) card.background else background
+        plainBody.border = BorderFactory.createEmptyBorder()
+        plainBody.margin = JBInsets(0, 0, 0, 0)
         if (codeBlock) {
-            body.font = Font(Font.MONOSPACED, Font.PLAIN, body.font.size)
-            body.background = Palette.CODE_BG
-            body.foreground = Palette.CODE_FG
-            body.border = BorderFactory.createCompoundBorder(
+            plainBody.font = Font(Font.MONOSPACED, Font.PLAIN, plainBody.font.size)
+            plainBody.background = Palette.CODE_BG
+            plainBody.foreground = Palette.CODE_FG
+            plainBody.border = BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(Palette.CODE_BORDER),
                 BorderFactory.createEmptyBorder(8, 10, 8, 10),
             )
         }
+
+        val markdownBody = if (!codeBlock && bubbleStyle && !alignRight) {
+            createMarkdownView(text, card.background)
+        } else {
+            null
+        }
+        val contentView: JComponent = markdownBody ?: plainBody
 
         val contentComponent: JComponent = if (codeBlock) {
             val codePanel = JPanel(BorderLayout(0, 6))
@@ -668,7 +676,7 @@ class IDopenToolWindowPanel(private val project: Project) {
                 prevButton.margin = JBInsets(2, 8, 2, 8)
                 nextButton.margin = JBInsets(2, 8, 2, 8)
                 val refreshPage = {
-                    body.text = state.currentPageText()
+                    plainBody.text = state.currentPageText()
                     pageLabel.text = state.pageLabel()
                     prevButton.isEnabled = state.hasPrevious()
                     nextButton.isEnabled = state.hasNext()
@@ -691,10 +699,10 @@ class IDopenToolWindowPanel(private val project: Project) {
             copyButton.addActionListener { copyToClipboard(text) }
             codeActions.add(copyButton)
             codePanel.add(codeActions, BorderLayout.NORTH)
-            codePanel.add(body, BorderLayout.CENTER)
+            codePanel.add(contentView, BorderLayout.CENTER)
             codePanel
         } else {
-            body
+            contentView
         }
 
         if (collapsible) {
@@ -709,7 +717,7 @@ class IDopenToolWindowPanel(private val project: Project) {
             }
             contentComponent.isVisible = !startCollapsed
             right.add(toggle)
-            collapsibleBodies[id] = body
+            collapsibleBodies[id] = contentComponent
         }
 
         header.add(left, BorderLayout.WEST)
@@ -719,7 +727,13 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         transcriptPanel.add(wrapCardRow(card, alignRight))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
-        messageAreas[id] = body
+        messageAreas[id] = { value ->
+            if (markdownBody != null) {
+                markdownBody.text = markdownToHtml(value)
+            } else {
+                plainBody.text = value
+            }
+        }
     }
 
     private fun addSystemBanner(
@@ -776,7 +790,7 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         transcriptPanel.add(wrapCardRow(banner, false))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
-        messageAreas[id] = body
+        messageAreas[id] = { value -> body.text = value }
     }
 
     private fun addToolEventRow(
@@ -873,8 +887,11 @@ class IDopenToolWindowPanel(private val project: Project) {
         copyButton.margin = JBInsets(2, 8, 2, 8)
         copyButton.addActionListener { copyToClipboard(text) }
         contentActions.add(copyButton)
+        val bodyScroll = createBoundedScrollPane(body, Palette.CODE_BG, 220)
+        bodyScroll.border = BorderFactory.createEmptyBorder()
+        bodyScroll.viewport.background = Palette.CODE_BG
         content.add(contentActions, BorderLayout.NORTH)
-        content.add(body, BorderLayout.CENTER)
+        content.add(bodyScroll, BorderLayout.CENTER)
 
         toggle.addActionListener {
             val expanded = !content.isVisible
@@ -896,7 +913,7 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         transcriptPanel.add(wrapCardRow(row, false))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 4)))
-        messageAreas[id] = body
+        messageAreas[id] = { value -> body.text = value }
         collapsibleBodies[id] = content
     }
 
@@ -947,10 +964,11 @@ class IDopenToolWindowPanel(private val project: Project) {
         body.foreground = JBColor.foreground()
         body.border = BorderFactory.createEmptyBorder()
         body.margin = JBInsets(0, 0, 0, 0)
+        val bodyScroll = createBoundedScrollPane(body, background, 180)
         val detailsPanel = JPanel(BorderLayout())
         detailsPanel.isOpaque = false
         detailsPanel.border = BorderFactory.createEmptyBorder(2, 0, 0, 0)
-        detailsPanel.add(body, BorderLayout.CENTER)
+        detailsPanel.add(bodyScroll, BorderLayout.CENTER)
         detailsPanel.isVisible = false
 
         val riskBox = JPanel(BorderLayout())
@@ -1248,6 +1266,192 @@ class IDopenToolWindowPanel(private val project: Project) {
         chip.add(label)
         return chip
     }
+
+    private fun createBoundedScrollPane(content: JComponent, background: Color, maxHeight: Int): JBScrollPane {
+        val preferredHeight = content.preferredSize.height.coerceIn(72, maxHeight)
+        return JBScrollPane(content).apply {
+            border = BorderFactory.createEmptyBorder()
+            isOpaque = false
+            viewport.isOpaque = true
+            viewport.background = background
+            horizontalScrollBar.unitIncrement = 16
+            verticalScrollBar.unitIncrement = 18
+            preferredSize = Dimension(0, preferredHeight)
+            maximumSize = Dimension(Int.MAX_VALUE, maxHeight)
+        }
+    }
+
+    private fun createMarkdownView(markdown: String, backgroundColor: Color): JEditorPane {
+        return JEditorPane("text/html", markdownToHtml(markdown)).apply {
+            isEditable = false
+            isOpaque = false
+            border = BorderFactory.createEmptyBorder()
+            margin = JBInsets(0, 0, 0, 0)
+            putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
+            font = JBLabel().font
+            foreground = JBColor.foreground()
+            caretColor = foreground
+            background = backgroundColor
+        }
+    }
+
+    private fun markdownToHtml(markdown: String): String {
+        val foreground = colorToHex(JBColor.foreground())
+        val muted = colorToHex(JBColor.GRAY)
+        val codeBackground = colorToHex(Palette.CODE_BG)
+        val codeBorder = colorToHex(Palette.CODE_BORDER)
+        val codeForeground = colorToHex(Palette.CODE_FG)
+
+        val html = StringBuilder()
+        val paragraph = mutableListOf<String>()
+        val listItems = mutableListOf<String>()
+        var orderedList = false
+        var inCodeBlock = false
+        val codeLines = mutableListOf<String>()
+
+        fun flushParagraph() {
+            if (paragraph.isEmpty()) return
+            html.append("<p>")
+            html.append(applyInlineMarkdown(paragraph.joinToString(" ")))
+            html.append("</p>")
+            paragraph.clear()
+        }
+
+        fun flushList() {
+            if (listItems.isEmpty()) return
+            html.append(if (orderedList) "<ol>" else "<ul>")
+            listItems.forEach { item ->
+                html.append("<li>").append(applyInlineMarkdown(item)).append("</li>")
+            }
+            html.append(if (orderedList) "</ol>" else "</ul>")
+            listItems.clear()
+        }
+
+        fun flushCodeBlock() {
+            if (!inCodeBlock) return
+            html.append("<pre><code>")
+            html.append(escapeHtml(codeLines.joinToString("\n")))
+            html.append("</code></pre>")
+            codeLines.clear()
+        }
+
+        markdown.lines().forEach { rawLine ->
+            val line = rawLine.trimEnd()
+            if (line.startsWith("```")) {
+                flushParagraph()
+                flushList()
+                if (inCodeBlock) {
+                    flushCodeBlock()
+                }
+                inCodeBlock = !inCodeBlock
+                return@forEach
+            }
+            if (inCodeBlock) {
+                codeLines += rawLine
+                return@forEach
+            }
+            if (line.isBlank()) {
+                flushParagraph()
+                flushList()
+                return@forEach
+            }
+
+            val heading = Regex("^(#{1,3})\\s+(.+)$").matchEntire(line)
+            if (heading != null) {
+                flushParagraph()
+                flushList()
+                val level = heading.groupValues[1].length.coerceAtMost(3)
+                html.append("<h$level>")
+                html.append(applyInlineMarkdown(heading.groupValues[2]))
+                html.append("</h$level>")
+                return@forEach
+            }
+
+            val ordered = Regex("^\\d+\\.\\s+(.+)$").matchEntire(line)
+            if (ordered != null) {
+                flushParagraph()
+                if (listItems.isNotEmpty() && !orderedList) flushList()
+                orderedList = true
+                listItems += ordered.groupValues[1]
+                return@forEach
+            }
+
+            val unordered = Regex("^[-*]\\s+(.+)$").matchEntire(line)
+            if (unordered != null) {
+                flushParagraph()
+                if (listItems.isNotEmpty() && orderedList) flushList()
+                orderedList = false
+                listItems += unordered.groupValues[1]
+                return@forEach
+            }
+
+            paragraph += line
+        }
+
+        flushParagraph()
+        flushList()
+        if (inCodeBlock) {
+            flushCodeBlock()
+        }
+
+        return """
+            <html>
+              <head>
+                <style>
+                  body { color: $foreground; font-family: sans-serif; font-size: 12px; margin: 0; }
+                  p { margin: 0 0 8px 0; }
+                  h1, h2, h3 { margin: 8px 0 6px 0; font-weight: 700; }
+                  h1 { font-size: 16px; }
+                  h2 { font-size: 14px; }
+                  h3 { font-size: 13px; }
+                  ul, ol { margin: 0 0 8px 18px; padding: 0; }
+                  li { margin: 0 0 4px 0; }
+                  code { font-family: monospace; color: $codeForeground; background: $codeBackground; border: 1px solid $codeBorder; padding: 1px 4px; }
+                  pre { margin: 6px 0 8px 0; padding: 8px 10px; color: $codeForeground; background: $codeBackground; border: 1px solid $codeBorder; }
+                  pre code { border: 0; padding: 0; background: transparent; }
+                  strong { font-weight: 700; }
+                  em { color: $muted; font-style: italic; }
+                </style>
+              </head>
+              <body>$html</body>
+            </html>
+        """.trimIndent()
+    }
+
+    private fun applyInlineMarkdown(text: String): String {
+        val codeSegments = mutableListOf<String>()
+        var withPlaceholders = text.replace(Regex("`([^`]+)`")) { match ->
+            val token = "__CODE_${codeSegments.size}__"
+            codeSegments += "<code>${escapeHtml(match.groupValues[1])}</code>"
+            token
+        }
+        withPlaceholders = escapeHtml(withPlaceholders)
+        withPlaceholders = withPlaceholders.replace(Regex("\\*\\*(.+?)\\*\\*"), "<strong>$1</strong>")
+        withPlaceholders = withPlaceholders.replace(Regex("(?<!\\*)\\*(?!\\s)(.+?)(?<!\\s)\\*(?!\\*)"), "<em>$1</em>")
+        codeSegments.forEachIndexed { index, value ->
+            withPlaceholders = withPlaceholders.replace("__CODE_${index}__", value)
+        }
+        return withPlaceholders
+    }
+
+    private fun escapeHtml(text: String): String {
+        return buildString(text.length) {
+            text.forEach { char ->
+                append(
+                    when (char) {
+                        '&' -> "&amp;"
+                        '<' -> "&lt;"
+                        '>' -> "&gt;"
+                        '"' -> "&quot;"
+                        '\'' -> "&#39;"
+                        else -> char
+                    },
+                )
+            }
+        }
+    }
+
+    private fun colorToHex(color: Color): String = "#%02x%02x%02x".format(color.red, color.green, color.blue)
 
     private fun copyToClipboard(text: String) {
         runCatching {
