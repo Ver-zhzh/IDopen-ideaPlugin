@@ -186,7 +186,7 @@ class AgentSessionService(private val project: Project) {
             val result = client.streamChat(
                 OpenAICompatibleClient.ChatRequest(
                     providerConfig = config,
-                    messages = session.history.toList(),
+                    messages = ContextWindowSupport.compact(session.history.toList()),
                     tools = toolDefinitions,
                 ),
             ) { delta ->
