@@ -333,14 +333,16 @@ class IntelliJAgentTools(
                 ?: return ToolExecutionResult("workingDirectory 超出了当前项目范围。", success = false)
         }
 
-        val request = ApprovalRequest(
-            id = "approval-${System.nanoTime()}",
-            type = ApprovalRequest.Type.COMMAND,
-            title = "执行命令于 ${projectRoot.relativize(directory).toString().ifBlank { "." }}",
-            payload = ApprovalPayload.Command(command, directory.toString()),
-        )
-        val approved = approvalRequester(request).get()
-        if (!approved) return ToolExecutionResult("用户拒绝了这次命令执行。", success = false)
+        if (!isSafeReadOnlyCommand(command)) {
+            val request = ApprovalRequest(
+                id = "approval-${System.nanoTime()}",
+                type = ApprovalRequest.Type.COMMAND,
+                title = "执行命令于 ${projectRoot.relativize(directory).toString().ifBlank { "." }}",
+                payload = ApprovalPayload.Command(command, directory.toString()),
+            )
+            val approved = approvalRequester(request).get()
+            if (!approved) return ToolExecutionResult("用户拒绝了这次命令执行。", success = false)
+        }
 
         val settings = shellSettings()
         val shell = settings.shellPath.ifBlank { com.idopen.idopen.settings.IDopenSettingsState.defaultShellPath() }
@@ -417,6 +419,30 @@ class IntelliJAgentTools(
 
     private fun truncate(text: String, maxChars: Int = 12_000): String {
         return if (text.length <= maxChars) text else text.take(maxChars) + "\n...[truncated]"
+    }
+
+    private fun isSafeReadOnlyCommand(command: String): Boolean {
+        val normalized = command.trim()
+        if (normalized.isBlank()) return false
+        if (listOf("&&", "||", ";", "|", ">", "<").any { it in normalized }) return false
+
+        val tokens = normalized.split(Regex("\\s+"))
+        if (tokens.isEmpty()) return false
+
+        return when (tokens.first().lowercase()) {
+            "dir", "ls", "pwd", "get-childitem", "get-location" -> true
+            "cat", "type", "more", "get-content", "where", "rg", "findstr", "select-string" -> true
+            "git" -> isSafeGitCommand(tokens.drop(1).map { it.lowercase() })
+            else -> false
+        }
+    }
+
+    private fun isSafeGitCommand(args: List<String>): Boolean {
+        if (args.isEmpty()) return false
+        return when (args.first()) {
+            "status", "diff", "show", "log", "branch", "rev-parse", "ls-files" -> true
+            else -> false
+        }
     }
 
     private fun isLikelyBinary(path: Path): Boolean {

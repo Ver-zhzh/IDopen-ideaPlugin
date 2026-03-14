@@ -369,7 +369,7 @@ class IDopenToolWindowPanel(private val project: Project) {
                 background = Palette.TOOL_BG,
                 accent = Palette.TOOL_ACCENT,
                 collapsible = true,
-                startCollapsed = false,
+                startCollapsed = true,
                 alignRight = false,
                 codeBlock = true,
             )
@@ -488,17 +488,33 @@ class IDopenToolWindowPanel(private val project: Project) {
             )
         }
 
+        val contentComponent: JComponent = if (codeBlock) {
+            val codePanel = JPanel(BorderLayout(0, 6))
+            codePanel.isOpaque = false
+            val codeActions = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
+            codeActions.isOpaque = false
+            val copyButton = JButton("复制")
+            copyButton.margin = JBInsets(2, 8, 2, 8)
+            copyButton.addActionListener { copyToClipboard(body.text) }
+            codeActions.add(copyButton)
+            codePanel.add(codeActions, BorderLayout.NORTH)
+            codePanel.add(body, BorderLayout.CENTER)
+            codePanel
+        } else {
+            body
+        }
+
         if (collapsible) {
             val toggle = JButton(if (startCollapsed) "展开" else "收起")
             toggle.margin = JBInsets(2, 8, 2, 8)
             toggle.addActionListener {
-                val expanded = !body.isVisible
-                body.isVisible = expanded
+                val expanded = !contentComponent.isVisible
+                contentComponent.isVisible = expanded
                 toggle.text = if (expanded) "收起" else "展开"
                 transcriptPanel.revalidate()
                 transcriptPanel.repaint()
             }
-            body.isVisible = !startCollapsed
+            contentComponent.isVisible = !startCollapsed
             right.add(toggle)
             collapsibleBodies[id] = body
         }
@@ -506,21 +522,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         header.add(left, BorderLayout.WEST)
         header.add(right, BorderLayout.EAST)
         card.add(header, BorderLayout.NORTH)
-        if (codeBlock) {
-            val codePanel = JPanel(BorderLayout(0, 6))
-            codePanel.isOpaque = false
-            val codeActions = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
-            codeActions.isOpaque = false
-            val copyButton = JButton("复制")
-            copyButton.margin = JBInsets(2, 8, 2, 8)
-            copyButton.addActionListener { copyToClipboard(text) }
-            codeActions.add(copyButton)
-            codePanel.add(codeActions, BorderLayout.NORTH)
-            codePanel.add(body, BorderLayout.CENTER)
-            card.add(codePanel, BorderLayout.CENTER)
-        } else {
-            card.add(body, BorderLayout.CENTER)
-        }
+        card.add(contentComponent, BorderLayout.CENTER)
 
         transcriptPanel.add(wrapCardRow(card, alignRight))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 8)))
