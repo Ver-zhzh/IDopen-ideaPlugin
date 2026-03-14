@@ -78,6 +78,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val endpointBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val modelBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val statusBadge = createPillLabel(Palette.STATUS_IDLE_BG, Palette.STATUS_IDLE_BORDER)
+    private val unlimitedUsageCheckBox = JBCheckBox("无限制使用")
     private val attachmentChips = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
     private val messageAreas = linkedMapOf<String, JBTextArea>()
     private val collapsibleBodies = linkedMapOf<String, JComponent>()
@@ -207,10 +208,17 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
         right.isOpaque = false
+        unlimitedUsageCheckBox.isOpaque = false
+        unlimitedUsageCheckBox.isSelected = IDopenSettingsState.getInstance().unlimitedUsage
+        unlimitedUsageCheckBox.toolTipText = "开启后不再限制代理轮数和工具调用次数。"
         val settingsButton = JButton("设置")
         settingsButton.preferredSize = Dimension(86, 30)
+        right.add(unlimitedUsageCheckBox)
         right.add(settingsButton)
 
+        unlimitedUsageCheckBox.addActionListener {
+            IDopenSettingsState.getInstance().unlimitedUsage = unlimitedUsageCheckBox.isSelected
+        }
         settingsButton.addActionListener {
             ShowSettingsUtil.getInstance().showSettingsDialog(project, "IDopen")
             refreshHeader()
@@ -328,6 +336,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun refreshHeader() {
         val settings = IDopenSettingsState.getInstance()
         providerBadge.text = "OpenAI-compatible"
+        unlimitedUsageCheckBox.isSelected = settings.unlimitedUsage
 
         val endpoint = settings.baseUrl.trim()
         endpointBadge.text = if (endpoint.isBlank()) "未配置接口" else shortEndpoint(endpoint)

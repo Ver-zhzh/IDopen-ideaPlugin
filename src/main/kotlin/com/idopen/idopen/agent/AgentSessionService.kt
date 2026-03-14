@@ -145,6 +145,7 @@ class AgentSessionService(private val project: Project) {
     private fun agentLoop(sessionId: String) {
         val session = session(sessionId) ?: return
         val settings = IDopenSettingsState.getInstance()
+        val unlimitedUsage = settings.unlimitedUsage
         val provider = ProviderConfigSupport.fromSettings(settings)
         if (provider.error != null) {
             emitFailure(session, provider.error)
@@ -156,7 +157,7 @@ class AgentSessionService(private val project: Project) {
 
         var totalToolCalls = 0
 
-        repeat(MAX_AGENT_TURNS) {
+        repeat(if (unlimitedUsage) Int.MAX_VALUE else MAX_AGENT_TURNS) {
             if (Thread.currentThread().isInterrupted) return
 
             var assistantEntry: TranscriptEntry.Assistant? = null
@@ -202,7 +203,7 @@ class AgentSessionService(private val project: Project) {
             for (toolCall in result.toolCalls) {
                 if (Thread.currentThread().isInterrupted) return
                 totalToolCalls += 1
-                if (totalToolCalls > MAX_TOOL_CALLS) {
+                if (!unlimitedUsage && totalToolCalls > MAX_TOOL_CALLS) {
                     emitFailure(session, "已达到工具调用安全上限（$MAX_TOOL_CALLS 次），任务已停止。")
                     return
                 }
@@ -236,7 +237,9 @@ class AgentSessionService(private val project: Project) {
             }
         }
 
-        emitFailure(session, "已达到代理推理轮数上限（$MAX_AGENT_TURNS 轮），任务已停止。")
+        if (!unlimitedUsage) {
+            emitFailure(session, "已达到代理推理轮数上限（$MAX_AGENT_TURNS 轮），任务已停止。")
+        }
     }
 
     private fun resolveToolDefinitions(

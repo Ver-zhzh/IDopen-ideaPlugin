@@ -21,6 +21,7 @@ class IDopenSettingsState : PersistentStateComponent<IDopenSettingsState> {
     var commandTimeoutSeconds: Int = 120
     var toolCallingMode: String = ToolCallingMode.AUTO.name
     var enableToolCalling: Boolean = false
+    var unlimitedUsage: Boolean = false
 
     override fun getState(): IDopenSettingsState = this
 
