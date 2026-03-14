@@ -75,8 +75,8 @@ class AgentSessionService(private val project: Project) {
         val session = currentSession()
         val userText = text.trim()
 
-        if (session.title == DEFAULT_SESSION_TITLE) {
-            session.title = summarizeTitle(userText)
+        SessionTitleSupport.pickTitle(session.title, DEFAULT_SESSION_TITLE, userText)?.let { title ->
+            session.title = title
             persistSessions()
         }
 
@@ -374,13 +374,7 @@ class AgentSessionService(private val project: Project) {
     private fun session(sessionId: String): SessionState? = sessions[sessionId]
 
     private fun summarizeTitle(text: String): String {
-        return text
-            .lineSequence()
-            .firstOrNull()
-            .orEmpty()
-            .replace(Regex("\\s+"), " ")
-            .take(24)
-            .ifBlank { DEFAULT_SESSION_TITLE }
+        return SessionTitleSupport.summarize(text) ?: DEFAULT_SESSION_TITLE
     }
 
     private fun resolveToolCallingMode(settings: IDopenSettingsState): ToolCallingMode {

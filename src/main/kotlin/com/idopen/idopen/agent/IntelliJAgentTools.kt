@@ -366,7 +366,12 @@ class IntelliJAgentTools(
                 ?: return ToolExecutionResult("workingDirectory 超出了当前项目范围。", success = false)
         }
 
-        if (!isSafeReadOnlyCommand(command)) {
+        val decision = CommandSafetySupport.evaluate(command)
+        if (decision.policy == CommandPolicy.BLOCKED) {
+            return ToolExecutionResult(decision.reason ?: "命令已被阻止。", success = false)
+        }
+
+        if (decision.policy == CommandPolicy.REQUIRE_APPROVAL) {
             val request = ApprovalRequest(
                 id = "approval-${System.nanoTime()}",
                 type = ApprovalRequest.Type.COMMAND,
@@ -452,30 +457,6 @@ class IntelliJAgentTools(
 
     private fun truncate(text: String, maxChars: Int = 12_000): String {
         return if (text.length <= maxChars) text else text.take(maxChars) + "\n...[truncated]"
-    }
-
-    private fun isSafeReadOnlyCommand(command: String): Boolean {
-        val normalized = command.trim()
-        if (normalized.isBlank()) return false
-        if (listOf("&&", "||", ";", "|", ">", "<").any { it in normalized }) return false
-
-        val tokens = normalized.split(Regex("\\s+"))
-        if (tokens.isEmpty()) return false
-
-        return when (tokens.first().lowercase()) {
-            "dir", "ls", "pwd", "get-childitem", "get-location" -> true
-            "cat", "type", "more", "get-content", "where", "rg", "findstr", "select-string" -> true
-            "git" -> isSafeGitCommand(tokens.drop(1).map { it.lowercase() })
-            else -> false
-        }
-    }
-
-    private fun isSafeGitCommand(args: List<String>): Boolean {
-        if (args.isEmpty()) return false
-        return when (args.first()) {
-            "status", "diff", "show", "log", "branch", "rev-parse", "ls-files" -> true
-            else -> false
-        }
     }
 
     private fun isLikelyBinary(path: Path): Boolean {
