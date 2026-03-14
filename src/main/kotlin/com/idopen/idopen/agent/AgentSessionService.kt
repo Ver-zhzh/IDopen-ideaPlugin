@@ -18,9 +18,11 @@ class AgentSessionService(private val project: Project) {
     companion object {
         private const val MAX_AGENT_TURNS = 24
         private const val MAX_TOOL_CALLS = 48
+        private const val DEFAULT_SESSION_TITLE = "新对话"
     }
 
     private val client = OpenAICompatibleClient()
+    private val sessionStore = project.getService(AgentSessionStore::class.java)
     private val listeners = CopyOnWriteArrayList<SessionListener>()
     private val pendingApprovals = ConcurrentHashMap<String, PendingApproval>()
     private val capabilityCache = ConcurrentHashMap<String, ToolCapability>()
@@ -30,7 +32,7 @@ class AgentSessionService(private val project: Project) {
     private val sessions = linkedMapOf<String, SessionState>()
 
     @Volatile
-    private var activeSessionId: String
+    private var activeSessionId: String = ""
 
     @Volatile
     private var currentRun: Future<*>? = null
@@ -39,8 +41,26 @@ class AgentSessionService(private val project: Project) {
     private var currentRunSessionId: String? = null
 
     init {
-        val firstSession = createSessionInternal("新对话")
-        activeSessionId = firstSession.id
+        val restored = sessionStore.restore()
+        if (restored != null && restored.sessions.isNotEmpty()) {
+            restored.sessions.forEach { persisted ->
+                sessions[persisted.id] = SessionState(
+                    id = persisted.id,
+                    title = persisted.title,
+                    transcript = persisted.transcript.toMutableList(),
+                    history = persisted.history.toMutableList(),
+                    updatedAt = persisted.updatedAt,
+                    lastCapabilityNotice = persisted.lastCapabilityNotice,
+                )
+            }
+            activeSessionId = restored.activeSessionId.takeIf { sessions.containsKey(it) }
+                ?: restored.sessions.first().id
+            idCounter.set(SessionPersistenceSupport.highestGeneratedId(restored))
+        } else {
+            val firstSession = createSessionInternal(DEFAULT_SESSION_TITLE)
+            activeSessionId = firstSession.id
+            persistSessions()
+        }
         emit(SessionEvent.SessionsChanged(getSessions(), activeSessionId))
     }
 
@@ -55,8 +75,9 @@ class AgentSessionService(private val project: Project) {
         val session = currentSession()
         val userText = text.trim()
 
-        if (session.title == "新对话") {
+        if (session.title == DEFAULT_SESSION_TITLE) {
             session.title = summarizeTitle(userText)
+            persistSessions()
         }
 
         if (attachments.isNotEmpty()) {
@@ -67,12 +88,14 @@ class AgentSessionService(private val project: Project) {
             val contextEntry = TranscriptEntry.Context(nextId("context"), prepared.transcriptSummary)
             appendEntry(session, contextEntry)
             session.history += ConversationMessage.System(prepared.injectedPrompt)
+            persistSessions()
             emit(SessionEvent.EntryAdded(contextEntry))
         }
 
         val userEntry = TranscriptEntry.User(nextId("user"), userText)
         appendEntry(session, userEntry)
         session.history += ConversationMessage.User(userText)
+        persistSessions()
         emit(SessionEvent.EntryAdded(userEntry))
         emitSessionsChanged()
         startRun(session.id)
@@ -114,7 +137,7 @@ class AgentSessionService(private val project: Project) {
 
     fun createSession(): String {
         if (isRunning()) return activeSessionId
-        val session = createSessionInternal("新对话")
+        val session = createSessionInternal(DEFAULT_SESSION_TITLE)
         activeSessionId = session.id
         emitSessionsChanged()
         return session.id
@@ -154,7 +177,6 @@ class AgentSessionService(private val project: Project) {
 
         val config = provider.config ?: return
         val toolDefinitions = resolveToolDefinitions(session, config, settings)
-
         var totalToolCalls = 0
 
         repeat(if (unlimitedUsage) Int.MAX_VALUE else MAX_AGENT_TURNS) {
@@ -175,6 +197,7 @@ class AgentSessionService(private val project: Project) {
                 }
                 entry.text += delta
                 session.updatedAt = Instant.now()
+                persistSessions()
                 emit(SessionEvent.MessageDelta(entry.id, delta, entry.text))
             }
 
@@ -189,6 +212,7 @@ class AgentSessionService(private val project: Project) {
                 content = result.text,
                 toolCalls = result.toolCalls,
             )
+            persistSessions()
 
             if (result.toolCalls.isEmpty()) {
                 emit(SessionEvent.RunCompleted("助手回复完成。"))
@@ -232,6 +256,7 @@ class AgentSessionService(private val project: Project) {
                     toolName = toolCall.name,
                     content = output.content,
                 )
+                persistSessions()
                 emit(SessionEvent.EntryAdded(resultEntry))
                 emit(SessionEvent.ToolCompleted(toolCall.id, toolCall.name, output.content, output.success))
             }
@@ -301,6 +326,7 @@ class AgentSessionService(private val project: Project) {
         } else {
             ApprovalRequest.Status.REJECTED
         }
+        persistSessions()
         pending.future.complete(approved)
     }
 
@@ -317,12 +343,14 @@ class AgentSessionService(private val project: Project) {
     }
 
     private fun emitSessionsChanged() {
+        persistSessions()
         emit(SessionEvent.SessionsChanged(getSessions(), activeSessionId))
     }
 
     private fun appendEntry(session: SessionState, entry: TranscriptEntry) {
         session.transcript += entry
         session.updatedAt = Instant.now()
+        persistSessions()
     }
 
     private fun createSessionInternal(title: String): SessionState {
@@ -352,7 +380,7 @@ class AgentSessionService(private val project: Project) {
             .orEmpty()
             .replace(Regex("\\s+"), " ")
             .take(24)
-            .ifBlank { "新对话" }
+            .ifBlank { DEFAULT_SESSION_TITLE }
     }
 
     private fun resolveToolCallingMode(settings: IDopenSettingsState): ToolCallingMode {
@@ -368,6 +396,23 @@ class AgentSessionService(private val project: Project) {
     }
 
     private fun nextId(prefix: String): String = "$prefix-${idCounter.incrementAndGet()}"
+
+    private fun persistSessions() {
+        if (activeSessionId.isBlank()) return
+        sessionStore.save(
+            activeSessionId = activeSessionId,
+            sessions = sessions.values.map { session ->
+                PersistedSessionState(
+                    id = session.id,
+                    title = session.title,
+                    transcript = session.transcript.toList(),
+                    history = session.history.toList(),
+                    updatedAt = session.updatedAt,
+                    lastCapabilityNotice = session.lastCapabilityNotice,
+                )
+            },
+        )
+    }
 
     private fun systemPrompt(): String {
         val projectRoot = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
