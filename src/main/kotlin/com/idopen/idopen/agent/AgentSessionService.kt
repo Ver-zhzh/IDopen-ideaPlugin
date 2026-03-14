@@ -15,6 +15,11 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @Service(Service.Level.PROJECT)
 class AgentSessionService(private val project: Project) {
+    companion object {
+        private const val MAX_AGENT_TURNS = 24
+        private const val MAX_TOOL_CALLS = 48
+    }
+
     private val client = OpenAICompatibleClient()
     private val listeners = CopyOnWriteArrayList<SessionListener>()
     private val pendingApprovals = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
@@ -149,7 +154,9 @@ class AgentSessionService(private val project: Project) {
         val config = provider.config ?: return
         val toolDefinitions = resolveToolDefinitions(session, config, settings)
 
-        repeat(8) {
+        var totalToolCalls = 0
+
+        repeat(MAX_AGENT_TURNS) {
             if (Thread.currentThread().isInterrupted) return
 
             var assistantEntry: TranscriptEntry.Assistant? = null
@@ -194,6 +201,11 @@ class AgentSessionService(private val project: Project) {
 
             for (toolCall in result.toolCalls) {
                 if (Thread.currentThread().isInterrupted) return
+                totalToolCalls += 1
+                if (totalToolCalls > MAX_TOOL_CALLS) {
+                    emitFailure(session, "已达到工具调用安全上限（$MAX_TOOL_CALLS 次），任务已停止。")
+                    return
+                }
 
                 val toolEntry = TranscriptEntry.ToolCall(
                     id = nextId("tool-call"),
@@ -224,7 +236,7 @@ class AgentSessionService(private val project: Project) {
             }
         }
 
-        emitFailure(session, "已达到最大工具调用轮数，任务已停止。")
+        emitFailure(session, "已达到代理推理轮数上限（$MAX_AGENT_TURNS 轮），任务已停止。")
     }
 
     private fun resolveToolDefinitions(

@@ -66,6 +66,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val transcriptScrollPane = JBScrollPane(transcriptPanel)
     private val sessionSelector = JComboBox<ChatSessionSummary>()
     private val newSessionButton = JButton("+")
+    private val composerActionButton = JButton("发送")
     private val inputArea = PromptTextArea(
         "输入你的需求，例如：解释当前类、修复这个错误、搜索某个调用链，或生成修改方案...",
         5,
@@ -116,6 +117,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         component.setContent(root)
         refreshHeader()
         updateStatus("空闲")
+        refreshComposerAction()
         refreshSessionSelector(service.getSessions(), service.getCurrentSessionId())
         renderCurrentTranscript()
     }
@@ -144,6 +146,14 @@ class IDopenToolWindowPanel(private val project: Project) {
         newSessionButton.toolTipText = "新建会话"
         newSessionButton.addActionListener {
             service.createSession()
+        }
+        composerActionButton.preferredSize = Dimension(96, 34)
+        composerActionButton.addActionListener {
+            if (service.isRunning()) {
+                service.stopCurrentRun()
+            } else {
+                submitMessage()
+            }
         }
     }
 
@@ -197,17 +207,10 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
         right.isOpaque = false
-        val stopButton = JButton("停止")
         val settingsButton = JButton("设置")
-        stopButton.preferredSize = Dimension(78, 30)
         settingsButton.preferredSize = Dimension(86, 30)
-        right.add(stopButton)
         right.add(settingsButton)
 
-        stopButton.addActionListener {
-            service.stopCurrentRun()
-            updateStatus("已停止")
-        }
         settingsButton.addActionListener {
             ShowSettingsUtil.getInstance().showSettingsDialog(project, "IDopen")
             refreshHeader()
@@ -254,14 +257,10 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         attachmentChips.isOpaque = false
 
-        val sendButton = JButton("发送")
-        sendButton.preferredSize = Dimension(96, 34)
-        sendButton.addActionListener { submitMessage() }
-
         val footer = JPanel(BorderLayout())
         footer.isOpaque = false
         footer.add(toggles, BorderLayout.WEST)
-        footer.add(sendButton, BorderLayout.EAST)
+        footer.add(composerActionButton, BorderLayout.EAST)
 
         val composer = JPanel()
         composer.layout = BoxLayout(composer, BoxLayout.Y_AXIS)
@@ -353,10 +352,17 @@ class IDopenToolWindowPanel(private val project: Project) {
                 is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.text = event.snapshot
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")
+                    refreshComposerAction()
                     refreshHeader()
                 }
-                is SessionEvent.RunCompleted -> updateStatus("已完成")
-                is SessionEvent.RunFailed -> updateStatus("失败")
+                is SessionEvent.RunCompleted -> {
+                    updateStatus("已完成")
+                    refreshComposerAction()
+                }
+                is SessionEvent.RunFailed -> {
+                    updateStatus("失败")
+                    refreshComposerAction()
+                }
                 is SessionEvent.ToolRequested -> Unit
                 is SessionEvent.ToolCompleted -> Unit
                 is SessionEvent.ApprovalRequested -> Unit
@@ -376,6 +382,11 @@ class IDopenToolWindowPanel(private val project: Project) {
             "已停止" -> setPillColors(statusBadge, Palette.STATUS_MUTED_BG, Palette.STATUS_MUTED_BORDER)
             else -> setPillColors(statusBadge, Palette.STATUS_IDLE_BG, Palette.STATUS_IDLE_BORDER)
         }
+    }
+
+    private fun refreshComposerAction() {
+        val running = service.isRunning()
+        composerActionButton.text = if (running) "停止" else "发送"
     }
 
     private fun renderEntry(entry: TranscriptEntry) {
