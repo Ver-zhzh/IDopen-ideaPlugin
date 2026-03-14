@@ -163,6 +163,23 @@ sealed interface TranscriptEntry {
         override val roundId: String? = null,
     ) : TranscriptEntry
 
+    data class StepStart(
+        override val id: String,
+        val stepIndex: Int,
+        val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
+    ) : TranscriptEntry
+
+    data class StepFinish(
+        override val id: String,
+        val stepIndex: Int,
+        val reason: String,
+        val toolCalls: Int,
+        val success: Boolean,
+        val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
+    ) : TranscriptEntry
+
     data class Error(
         override val id: String,
         val message: String,

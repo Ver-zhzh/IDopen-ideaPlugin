@@ -193,10 +193,20 @@ class AgentSessionService(private val project: Project) {
         val toolDefinitions = resolveToolDefinitions(session, config, settings, roundId)
         var totalToolCalls = 0
 
-        repeat(if (unlimitedUsage) Int.MAX_VALUE else MAX_AGENT_TURNS) {
+        repeat(if (unlimitedUsage) Int.MAX_VALUE else MAX_AGENT_TURNS) { turnIndex ->
             if (Thread.currentThread().isInterrupted) return
+            val stepIndex = turnIndex + 1
+            val stepStart = TranscriptEntry.StepStart(
+                id = nextId("step-start"),
+                stepIndex = stepIndex,
+                roundId = roundId,
+            )
+            appendEntry(session, stepStart)
+            emit(SessionEvent.EntryAdded(stepStart))
 
             var assistantEntry: TranscriptEntry.Assistant? = null
+            var stepToolCalls = 0
+            var stepSucceeded = true
             val result = client.streamChat(
                 OpenAICompatibleClient.ChatRequest(
                     providerConfig = config,
@@ -237,11 +247,13 @@ class AgentSessionService(private val project: Project) {
             persistSessions()
 
             if (result.toolCalls.isEmpty()) {
+                emitStepFinish(session, stepIndex, "final", 0, true, roundId)
                 emit(SessionEvent.RunCompleted("助手回复完成。"))
                 return
             }
 
             if (toolDefinitions.isEmpty()) {
+                emitStepFinish(session, stepIndex, "tool-disabled", 0, false, roundId)
                 emitFailure(session, "当前模型未启用工具调用，但返回了工具请求。", roundId)
                 return
             }
@@ -249,7 +261,9 @@ class AgentSessionService(private val project: Project) {
             for (toolCall in result.toolCalls) {
                 if (Thread.currentThread().isInterrupted) return
                 totalToolCalls += 1
+                stepToolCalls += 1
                 if (!unlimitedUsage && totalToolCalls > MAX_TOOL_CALLS) {
+                    emitStepFinish(session, stepIndex, "tool-limit", stepToolCalls, false, roundId)
                     emitFailure(session, "已达到工具调用安全上限（$MAX_TOOL_CALLS 次），任务已停止。", roundId)
                     return
                 }
@@ -266,6 +280,9 @@ class AgentSessionService(private val project: Project) {
 
                 val output = runCatching { tools.execute(toolCall) }
                     .getOrElse { ToolExecutionResult("工具执行失败：${it.message}", success = false) }
+                if (!output.success) {
+                    stepSucceeded = false
+                }
 
                 val resultEntry = TranscriptEntry.ToolResult(
                     id = nextId("tool-result"),
@@ -284,6 +301,8 @@ class AgentSessionService(private val project: Project) {
                 emit(SessionEvent.EntryAdded(resultEntry))
                 emit(SessionEvent.ToolCompleted(toolCall.id, toolCall.name, output.content, output.success))
             }
+
+            emitStepFinish(session, stepIndex, "tool-loop", stepToolCalls, stepSucceeded, roundId)
         }
 
         if (!unlimitedUsage) {
@@ -392,6 +411,26 @@ class AgentSessionService(private val project: Project) {
         session.transcript += entry
         session.updatedAt = Instant.now()
         persistSessions()
+    }
+
+    private fun emitStepFinish(
+        session: SessionState,
+        stepIndex: Int,
+        reason: String,
+        toolCalls: Int,
+        success: Boolean,
+        roundId: String,
+    ) {
+        val entry = TranscriptEntry.StepFinish(
+            id = nextId("step-finish"),
+            stepIndex = stepIndex,
+            reason = reason,
+            toolCalls = toolCalls,
+            success = success,
+            roundId = roundId,
+        )
+        appendEntry(session, entry)
+        emit(SessionEvent.EntryAdded(entry))
     }
 
     private fun createSessionInternal(title: String): SessionState {

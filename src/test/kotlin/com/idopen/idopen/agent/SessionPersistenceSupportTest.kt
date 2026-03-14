@@ -17,9 +17,11 @@ class SessionPersistenceSupportTest {
                 transcript = listOf(
                     TranscriptEntry.System("system-1", "ready", now),
                     TranscriptEntry.User("user-2", "你好", now, "round-1"),
+                    TranscriptEntry.StepStart("step-start-10", 1, now, "round-1"),
                     TranscriptEntry.Assistant("assistant-3", "## 标题\n**内容**", now, "round-1"),
                     TranscriptEntry.ToolCall("tool-call-4", "read_file", """{"path":"README.md"}""", now, "round-1"),
                     TranscriptEntry.ToolResult("tool-result-5", "read_file", "ok", true, now, "round-1"),
+                    TranscriptEntry.StepFinish("step-finish-11", 1, "tool-loop", 1, true, now, "round-1"),
                     TranscriptEntry.Approval(
                         "approval-entry-6",
                         ApprovalRequest(
@@ -54,9 +56,13 @@ class SessionPersistenceSupportTest {
         assertEquals(1, decoded.sessions.size)
         assertEquals("查看项目", decoded.sessions.first().title)
         assertEquals("fallback", decoded.sessions.first().lastCapabilityNotice)
-        assertIs<TranscriptEntry.Assistant>(decoded.sessions.first().transcript[2])
-        assertEquals("round-1", decoded.sessions.first().transcript[2].roundId)
-        val approval = assertIs<TranscriptEntry.Approval>(decoded.sessions.first().transcript[5])
+        assertIs<TranscriptEntry.StepStart>(decoded.sessions.first().transcript[2])
+        assertIs<TranscriptEntry.Assistant>(decoded.sessions.first().transcript[3])
+        assertEquals("round-1", decoded.sessions.first().transcript[3].roundId)
+        val stepFinish = assertIs<TranscriptEntry.StepFinish>(decoded.sessions.first().transcript[6])
+        assertEquals("tool-loop", stepFinish.reason)
+        assertEquals(1, stepFinish.toolCalls)
+        val approval = assertIs<TranscriptEntry.Approval>(decoded.sessions.first().transcript[7])
         assertEquals(ApprovalRequest.Status.APPROVED, approval.request.status)
         assertIs<ApprovalPayload.Command>(approval.request.payload)
         assertEquals("round-1", approval.roundId)

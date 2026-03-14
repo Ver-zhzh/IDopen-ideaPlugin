@@ -190,7 +190,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         if (transcript.isEmpty()) {
             transcriptPanel.add(emptyState)
         } else {
-            transcript.forEach(::renderEntry)
+            transcript.forEach(::renderTranscriptEntry)
         }
         transcriptPanel.revalidate()
         transcriptPanel.repaint()
@@ -428,7 +428,7 @@ class IDopenToolWindowPanel(private val project: Project) {
                         renderCurrentTranscript()
                     }
                 }
-                is SessionEvent.EntryAdded -> renderEntry(event.entry)
+                is SessionEvent.EntryAdded -> renderTranscriptEntry(event.entry)
                 is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.invoke(event.snapshot)
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")
@@ -574,8 +574,184 @@ class IDopenToolWindowPanel(private val project: Project) {
                 codeBlock = false,
             )
 
+            is TranscriptEntry.StepStart -> renderTranscriptEntry(entry)
+
+            is TranscriptEntry.StepFinish -> renderTranscriptEntry(entry)
+
             is TranscriptEntry.Approval -> addApprovalCard(entry)
         }
+    }
+
+    private fun renderTranscriptEntry(entry: TranscriptEntry) {
+        if (transcriptPanel.components.contains(emptyState)) {
+            transcriptPanel.remove(emptyState)
+        }
+        maybeRenderRoundSeparator(entry)
+
+        when (entry) {
+            is TranscriptEntry.User -> addMessageCard(
+                id = entry.id,
+                stage = "用户",
+                title = "你",
+                subtitle = null,
+                text = entry.text,
+                createdAt = entry.createdAt,
+                background = Palette.USER_BG,
+                accent = Palette.USER_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = true,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.Assistant -> addMessageCard(
+                id = entry.id,
+                stage = "助手",
+                title = "IDopen",
+                subtitle = null,
+                text = entry.text,
+                createdAt = entry.createdAt,
+                background = Palette.ASSISTANT_BG,
+                accent = Palette.ASSISTANT_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.ToolCall -> addToolEventRow(
+                id = entry.id,
+                stage = "工具",
+                title = entry.toolName,
+                subtitle = "参数",
+                text = entry.argumentsJson,
+                createdAt = entry.createdAt,
+                accent = Palette.TOOL_ACCENT,
+            )
+
+            is TranscriptEntry.ToolResult -> addToolEventRow(
+                id = entry.id,
+                stage = if (entry.success) "结果" else "结果/错误",
+                title = entry.toolName,
+                subtitle = if (entry.success) "已完成" else "失败",
+                text = entry.output,
+                createdAt = entry.createdAt,
+                accent = if (entry.success) Palette.TOOL_ACCENT else Palette.ERROR_ACCENT,
+            )
+
+            is TranscriptEntry.Approval -> addApprovalCard(entry)
+
+            is TranscriptEntry.StepStart -> addStepRow(
+                id = entry.id,
+                text = "步骤 ${entry.stepIndex} 开始",
+                createdAt = entry.createdAt,
+                accent = Palette.TOOL_ACCENT,
+            )
+
+            is TranscriptEntry.StepFinish -> addStepRow(
+                id = entry.id,
+                text = buildString {
+                    append("步骤 ${entry.stepIndex} ")
+                    append(if (entry.success) "完成" else "结束")
+                    append(" · ")
+                    append(
+                        when (entry.reason) {
+                            "final" -> "直接答复"
+                            "tool-loop" -> "工具循环"
+                            "tool-disabled" -> "工具未启用"
+                            "tool-limit" -> "达到工具上限"
+                            else -> entry.reason
+                        },
+                    )
+                    if (entry.toolCalls > 0) {
+                        append(" · ${entry.toolCalls} 个工具")
+                    }
+                },
+                createdAt = entry.createdAt,
+                accent = if (entry.success) Palette.TOOL_ACCENT else Palette.ERROR_ACCENT,
+            )
+
+            is TranscriptEntry.Error -> addMessageCard(
+                id = entry.id,
+                stage = "错误",
+                title = "执行错误",
+                subtitle = null,
+                text = entry.message,
+                createdAt = entry.createdAt,
+                background = Palette.ERROR_BG,
+                accent = Palette.ERROR_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.Context -> addMessageCard(
+                id = entry.id,
+                stage = "上下文",
+                title = "IDE 上下文",
+                subtitle = null,
+                text = entry.summary,
+                createdAt = entry.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.TOOL_ACCENT,
+                collapsible = true,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.System -> addSystemBanner(
+                id = entry.id,
+                stage = "系统",
+                title = "系统",
+                subtitle = null,
+                text = entry.message,
+                createdAt = entry.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.SYSTEM_ACCENT,
+                collapsible = true,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+        }
+    }
+
+    private fun addStepRow(
+        id: String,
+        text: String,
+        createdAt: Instant,
+        accent: Color,
+    ) {
+        if (messageAreas.containsKey(id)) return
+
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
+        row.isOpaque = false
+        row.maximumSize = Dimension(Int.MAX_VALUE, 22)
+        row.alignmentX = Component.LEFT_ALIGNMENT
+
+        val dot = JPanel()
+        dot.background = accent
+        dot.preferredSize = Dimension(6, 6)
+        dot.maximumSize = Dimension(6, 6)
+        dot.minimumSize = Dimension(6, 6)
+        dot.border = BorderFactory.createEmptyBorder()
+
+        val label = JBLabel(text)
+        label.foreground = JBColor.GRAY
+        label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 1f)
+
+        val timeLabel = JBLabel(formatTime(createdAt))
+        timeLabel.foreground = JBColor.GRAY
+
+        row.add(dot)
+        row.add(label)
+        row.add(timeLabel)
+
+        transcriptPanel.add(row)
+        transcriptPanel.add(Box.createRigidArea(Dimension(0, 4)))
+        messageAreas[id] = {}
     }
 
     private fun maybeRenderRoundSeparator(entry: TranscriptEntry) {
