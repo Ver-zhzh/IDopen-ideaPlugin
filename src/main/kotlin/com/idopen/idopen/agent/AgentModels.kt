@@ -121,6 +121,13 @@ data class ApprovalRequest(
     }
 }
 
+enum class ToolInvocationState {
+    PENDING,
+    RUNNING,
+    COMPLETED,
+    ERROR,
+}
+
 sealed interface TranscriptEntry {
     val id: String
     val roundId: String?
@@ -152,6 +159,18 @@ sealed interface TranscriptEntry {
         val toolName: String,
         val output: String,
         val success: Boolean,
+        val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
+    ) : TranscriptEntry
+
+    data class ToolInvocation(
+        override val id: String,
+        val callId: String,
+        val toolName: String,
+        val argumentsJson: String,
+        var state: ToolInvocationState = ToolInvocationState.RUNNING,
+        var output: String? = null,
+        var success: Boolean? = null,
         val createdAt: Instant = Instant.now(),
         override val roundId: String? = null,
     ) : TranscriptEntry
@@ -209,6 +228,7 @@ sealed interface SessionEvent {
     ) : SessionEvent
 
     data class EntryAdded(val entry: TranscriptEntry) : SessionEvent
+    data class EntryUpdated(val entry: TranscriptEntry) : SessionEvent
     data class MessageDelta(
         val messageId: String,
         val delta: String,

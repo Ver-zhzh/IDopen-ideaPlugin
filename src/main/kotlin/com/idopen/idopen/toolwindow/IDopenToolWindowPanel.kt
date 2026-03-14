@@ -429,6 +429,7 @@ class IDopenToolWindowPanel(private val project: Project) {
                     }
                 }
                 is SessionEvent.EntryAdded -> renderTranscriptEntry(event.entry)
+                is SessionEvent.EntryUpdated -> renderCurrentTranscript()
                 is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.invoke(event.snapshot)
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")
@@ -579,6 +580,8 @@ class IDopenToolWindowPanel(private val project: Project) {
             is TranscriptEntry.StepFinish -> renderTranscriptEntry(entry)
 
             is TranscriptEntry.Approval -> addApprovalCard(entry)
+
+            else -> renderTranscriptEntry(entry)
         }
     }
 
@@ -670,6 +673,8 @@ class IDopenToolWindowPanel(private val project: Project) {
                 createdAt = entry.createdAt,
                 accent = if (entry.success) Palette.TOOL_ACCENT else Palette.ERROR_ACCENT,
             )
+
+            is TranscriptEntry.ToolInvocation -> addToolInvocationRow(entry)
 
             is TranscriptEntry.Error -> addMessageCard(
                 id = entry.id,
@@ -1149,6 +1154,39 @@ class IDopenToolWindowPanel(private val project: Project) {
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 4)))
         messageAreas[id] = { value -> body.text = value }
         collapsibleBodies[id] = content
+    }
+
+    private fun addToolInvocationRow(entry: TranscriptEntry.ToolInvocation) {
+        val subtitle = when (entry.state) {
+            com.idopen.idopen.agent.ToolInvocationState.PENDING -> "等待中"
+            com.idopen.idopen.agent.ToolInvocationState.RUNNING -> "执行中"
+            com.idopen.idopen.agent.ToolInvocationState.COMPLETED -> "已完成"
+            com.idopen.idopen.agent.ToolInvocationState.ERROR -> "失败"
+        }
+        val accent = when (entry.state) {
+            com.idopen.idopen.agent.ToolInvocationState.ERROR -> Palette.ERROR_ACCENT
+            else -> Palette.TOOL_ACCENT
+        }
+        val details = buildString {
+            append("参数")
+            append("\n")
+            append(entry.argumentsJson)
+            entry.output?.takeIf { it.isNotBlank() }?.let { output ->
+                append("\n\n")
+                append(if (entry.state == com.idopen.idopen.agent.ToolInvocationState.ERROR) "错误输出" else "执行结果")
+                append("\n")
+                append(output)
+            }
+        }
+        addToolEventRow(
+            id = entry.id,
+            stage = "工具",
+            title = entry.toolName,
+            subtitle = subtitle,
+            text = details,
+            createdAt = entry.createdAt,
+            accent = accent,
+        )
     }
 
     private fun addApprovalCard(entry: TranscriptEntry.Approval) {

@@ -109,6 +109,16 @@ object SessionPersistenceSupport {
                     put("success", entry.success)
                     put("createdAt", entry.createdAt.toEpochMilli())
                 }
+                is TranscriptEntry.ToolInvocation -> {
+                    put("kind", "toolInvocation")
+                    put("callId", entry.callId)
+                    put("toolName", entry.toolName)
+                    put("argumentsJson", entry.argumentsJson)
+                    put("state", entry.state.name)
+                    entry.output?.let { put("output", it) }
+                    entry.success?.let { put("success", it) }
+                    put("createdAt", entry.createdAt.toEpochMilli())
+                }
                 is TranscriptEntry.Approval -> {
                     put("kind", "approval")
                     put("createdAt", entry.createdAt.toEpochMilli())
@@ -159,6 +169,20 @@ object SessionPersistenceSupport {
                 toolName = node.path("toolName").asText(),
                 output = node.path("output").asText(),
                 success = node.path("success").asBoolean(true),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
+            "toolInvocation" -> TranscriptEntry.ToolInvocation(
+                id = id,
+                callId = node.path("callId").asText(),
+                toolName = node.path("toolName").asText(),
+                argumentsJson = node.path("argumentsJson").asText(),
+                state = node.path("state").asText()
+                    .takeIf { it.isNotBlank() }
+                    ?.let(ToolInvocationState::valueOf)
+                    ?: ToolInvocationState.RUNNING,
+                output = node.path("output").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+                success = node.path("success").takeIf { !it.isMissingNode && !it.isNull }?.asBoolean(),
                 createdAt = createdAt,
                 roundId = roundId,
             )

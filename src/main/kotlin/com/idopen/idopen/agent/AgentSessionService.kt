@@ -268,10 +268,12 @@ class AgentSessionService(private val project: Project) {
                     return
                 }
 
-                val toolEntry = TranscriptEntry.ToolCall(
-                    id = nextId("tool-call"),
+                val toolEntry = TranscriptEntry.ToolInvocation(
+                    id = nextId("tool"),
+                    callId = toolCall.id,
                     toolName = toolCall.name,
                     argumentsJson = toolCall.argumentsJson,
+                    state = ToolInvocationState.RUNNING,
                     roundId = roundId,
                 )
                 appendEntry(session, toolEntry)
@@ -284,21 +286,19 @@ class AgentSessionService(private val project: Project) {
                     stepSucceeded = false
                 }
 
-                val resultEntry = TranscriptEntry.ToolResult(
-                    id = nextId("tool-result"),
-                    toolName = toolCall.name,
-                    output = output.content,
-                    success = output.success,
-                    roundId = roundId,
-                )
-                appendEntry(session, resultEntry)
+                toolEntry.state = if (output.success) {
+                    ToolInvocationState.COMPLETED
+                } else {
+                    ToolInvocationState.ERROR
+                }
+                toolEntry.output = output.content
+                toolEntry.success = output.success
                 session.history += ConversationMessage.Tool(
                     toolCallId = toolCall.id,
                     toolName = toolCall.name,
                     content = output.content,
                 )
-                persistSessions()
-                emit(SessionEvent.EntryAdded(resultEntry))
+                emitEntryUpdated(session, toolEntry)
                 emit(SessionEvent.ToolCompleted(toolCall.id, toolCall.name, output.content, output.success))
             }
 
@@ -411,6 +411,12 @@ class AgentSessionService(private val project: Project) {
         session.transcript += entry
         session.updatedAt = Instant.now()
         persistSessions()
+    }
+
+    private fun emitEntryUpdated(session: SessionState, entry: TranscriptEntry) {
+        session.updatedAt = Instant.now()
+        persistSessions()
+        emit(SessionEvent.EntryUpdated(entry))
     }
 
     private fun emitStepFinish(
