@@ -1466,7 +1466,12 @@ class IDopenToolWindowPanel(private val project: Project) {
     }
 
     private fun wrapCardRow(card: JComponent, alignRight: Boolean): JComponent {
-        val row = JPanel()
+        val row = object : JPanel() {
+            override fun getMaximumSize(): Dimension {
+                val preferred = preferredSize
+                return Dimension(Int.MAX_VALUE, preferred.height)
+            }
+        }
         row.layout = BoxLayout(row, BoxLayout.X_AXIS)
         row.isOpaque = false
         row.alignmentX = Component.LEFT_ALIGNMENT
