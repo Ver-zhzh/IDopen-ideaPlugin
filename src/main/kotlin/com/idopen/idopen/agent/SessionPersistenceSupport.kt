@@ -94,6 +94,11 @@ object SessionPersistenceSupport {
                 is TranscriptEntry.Assistant -> {
                     put("kind", "assistant")
                     put("text", entry.text)
+                    if (entry.outputParts.isNotEmpty()) {
+                        putArray("outputParts").apply {
+                            entry.outputParts.forEach { add(serializeAssistantOutputPart(it)) }
+                        }
+                    }
                     put("createdAt", entry.createdAt.toEpochMilli())
                 }
                 is TranscriptEntry.ToolCall -> {
@@ -109,14 +114,47 @@ object SessionPersistenceSupport {
                     put("success", entry.success)
                     put("createdAt", entry.createdAt.toEpochMilli())
                 }
+                is TranscriptEntry.ToolInvocation -> {
+                    put("kind", "toolInvocation")
+                    put("callId", entry.callId)
+                    put("toolName", entry.toolName)
+                    put("argumentsJson", entry.argumentsJson)
+                    put("state", entry.state.name)
+                    entry.title?.let { put("title", it) }
+                    if (entry.metadata.isNotEmpty()) {
+                        set<ObjectNode>("metadata", mapper.createObjectNode().apply {
+                            entry.metadata.forEach { (key, value) -> put(key, value) }
+                        })
+                    }
+                    entry.startedAt?.let { put("startedAt", it.toEpochMilli()) }
+                    entry.finishedAt?.let { put("finishedAt", it.toEpochMilli()) }
+                    entry.output?.let { put("output", it) }
+                    entry.success?.let { put("success", it) }
+                    entry.recoveryHint?.let { put("recoveryHint", it) }
+                    put("createdAt", entry.createdAt.toEpochMilli())
+                }
                 is TranscriptEntry.Approval -> {
                     put("kind", "approval")
                     put("createdAt", entry.createdAt.toEpochMilli())
                     set<ObjectNode>("request", serializeApproval(entry.request))
                 }
+                is TranscriptEntry.StepStart -> {
+                    put("kind", "stepStart")
+                    put("stepIndex", entry.stepIndex)
+                    put("createdAt", entry.createdAt.toEpochMilli())
+                }
+                is TranscriptEntry.StepFinish -> {
+                    put("kind", "stepFinish")
+                    put("stepIndex", entry.stepIndex)
+                    put("reason", entry.reason)
+                    put("toolCalls", entry.toolCalls)
+                    put("success", entry.success)
+                    put("createdAt", entry.createdAt.toEpochMilli())
+                }
                 is TranscriptEntry.Error -> {
                     put("kind", "error")
                     put("message", entry.message)
+                    entry.recoveryHint?.let { put("recoveryHint", it) }
                     put("createdAt", entry.createdAt.toEpochMilli())
                 }
                 is TranscriptEntry.Context -> {
@@ -139,7 +177,13 @@ object SessionPersistenceSupport {
         val roundId = node.path("roundId").takeIf { !it.isMissingNode && !it.isNull }?.asText()
         return when (node.path("kind").asText()) {
             "user" -> TranscriptEntry.User(id, node.path("text").asText(), createdAt, roundId)
-            "assistant" -> TranscriptEntry.Assistant(id, node.path("text").asText(), createdAt, roundId)
+            "assistant" -> TranscriptEntry.Assistant(
+                id = id,
+                text = node.path("text").asText(),
+                outputParts = node.path("outputParts").takeIf { it.isArray }?.map(::deserializeAssistantOutputPart).orEmpty(),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
             "toolCall" -> TranscriptEntry.ToolCall(id, node.path("toolName").asText(), node.path("argumentsJson").asText(), createdAt, roundId)
             "toolResult" -> TranscriptEntry.ToolResult(
                 id = id,
@@ -149,8 +193,55 @@ object SessionPersistenceSupport {
                 createdAt = createdAt,
                 roundId = roundId,
             )
+            "toolInvocation" -> TranscriptEntry.ToolInvocation(
+                id = id,
+                callId = node.path("callId").asText(),
+                toolName = node.path("toolName").asText(),
+                argumentsJson = node.path("argumentsJson").asText(),
+                state = node.path("state").asText()
+                    .takeIf { it.isNotBlank() }
+                    ?.let(ToolInvocationState::valueOf)
+                    ?: ToolInvocationState.PENDING,
+                title = node.path("title").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+                metadata = node.path("metadata")
+                    .takeIf { it.isObject }
+                    ?.fields()
+                    ?.asSequence()
+                    ?.associate { it.key to it.value.asText() }
+                    .orEmpty(),
+                startedAt = node.path("startedAt").takeIf { !it.isMissingNode && !it.isNull }?.asLong()
+                    ?.let(Instant::ofEpochMilli),
+                finishedAt = node.path("finishedAt").takeIf { !it.isMissingNode && !it.isNull }?.asLong()
+                    ?.let(Instant::ofEpochMilli),
+                output = node.path("output").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+                success = node.path("success").takeIf { !it.isMissingNode && !it.isNull }?.asBoolean(),
+                recoveryHint = node.path("recoveryHint").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
             "approval" -> TranscriptEntry.Approval(id, deserializeApproval(node.path("request")), createdAt, roundId)
-            "error" -> TranscriptEntry.Error(id, node.path("message").asText(), createdAt, roundId)
+            "stepStart" -> TranscriptEntry.StepStart(
+                id = id,
+                stepIndex = node.path("stepIndex").asInt(),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
+            "stepFinish" -> TranscriptEntry.StepFinish(
+                id = id,
+                stepIndex = node.path("stepIndex").asInt(),
+                reason = node.path("reason").asText(),
+                toolCalls = node.path("toolCalls").asInt(),
+                success = node.path("success").asBoolean(true),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
+            "error" -> TranscriptEntry.Error(
+                id = id,
+                message = node.path("message").asText(),
+                recoveryHint = node.path("recoveryHint").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
             "context" -> TranscriptEntry.Context(id, node.path("summary").asText(), createdAt, roundId)
             else -> TranscriptEntry.System(id, node.path("message").asText(), createdAt, roundId)
         }
@@ -162,14 +253,22 @@ object SessionPersistenceSupport {
                 is ConversationMessage.System -> {
                     put("kind", "system")
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
                 }
                 is ConversationMessage.User -> {
                     put("kind", "user")
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
                 }
                 is ConversationMessage.Assistant -> {
                     put("kind", "assistant")
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
+                    if (message.outputParts.isNotEmpty()) {
+                        putArray("outputParts").apply {
+                            message.outputParts.forEach { add(serializeAssistantOutputPart(it)) }
+                        }
+                    }
                     putArray("toolCalls").apply {
                         message.toolCalls.forEach { add(serializeToolCall(it)) }
                     }
@@ -179,23 +278,28 @@ object SessionPersistenceSupport {
                     put("toolCallId", message.toolCallId)
                     put("toolName", message.toolName)
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
                 }
             }
         }
     }
 
     private fun deserializeConversationMessage(node: JsonNode): ConversationMessage {
+        val roundId = node.path("roundId").takeIf { !it.isMissingNode && !it.isNull }?.asText()
         return when (node.path("kind").asText()) {
-            "system" -> ConversationMessage.System(node.path("content").asText())
-            "user" -> ConversationMessage.User(node.path("content").asText())
+            "system" -> ConversationMessage.System(node.path("content").asText(), roundId)
+            "user" -> ConversationMessage.User(node.path("content").asText(), roundId)
             "assistant" -> ConversationMessage.Assistant(
                 content = node.path("content").asText(),
                 toolCalls = node.path("toolCalls").takeIf { it.isArray }?.map(::deserializeToolCall).orEmpty(),
+                outputParts = node.path("outputParts").takeIf { it.isArray }?.map(::deserializeAssistantOutputPart).orEmpty(),
+                roundId = roundId,
             )
             else -> ConversationMessage.Tool(
                 toolCallId = node.path("toolCallId").asText(),
                 toolName = node.path("toolName").asText(),
                 content = node.path("content").asText(),
+                roundId = roundId,
             )
         }
     }
@@ -214,6 +318,43 @@ object SessionPersistenceSupport {
             name = node.path("name").asText(),
             argumentsJson = node.path("argumentsJson").asText(),
         )
+    }
+
+    private fun serializeAssistantOutputPart(part: AssistantOutputPart): ObjectNode {
+        return mapper.createObjectNode().apply {
+            when (part) {
+                is AssistantOutputPart.Text -> {
+                    put("kind", "text")
+                    put("text", part.text)
+                }
+                is AssistantOutputPart.CodeBlock -> {
+                    put("kind", "code")
+                    put("code", part.code)
+                    part.language?.let { put("language", it) }
+                }
+                is AssistantOutputPart.ListBlock -> {
+                    put("kind", "list")
+                    put("ordered", part.ordered)
+                    putArray("items").apply {
+                        part.items.forEach(::add)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun deserializeAssistantOutputPart(node: JsonNode): AssistantOutputPart {
+        return when (node.path("kind").asText()) {
+            "code" -> AssistantOutputPart.CodeBlock(
+                code = node.path("code").asText(),
+                language = node.path("language").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+            )
+            "list" -> AssistantOutputPart.ListBlock(
+                items = node.path("items").takeIf { it.isArray }?.map { it.asText() }.orEmpty(),
+                ordered = node.path("ordered").asBoolean(false),
+            )
+            else -> AssistantOutputPart.Text(node.path("text").asText())
+        }
     }
 
     private fun serializeApproval(request: ApprovalRequest): ObjectNode {

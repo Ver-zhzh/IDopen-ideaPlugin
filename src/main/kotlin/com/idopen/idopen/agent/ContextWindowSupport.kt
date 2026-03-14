@@ -5,9 +5,13 @@ object ContextWindowSupport {
     private const val MIN_RECENT_MESSAGES = 8
     private const val MAX_RECENT_MESSAGES = 18
     private const val SUMMARY_LINE_LIMIT = 18
+    private const val SUMMARY_GROUP_LIMIT = 8
     private const val SUMMARY_VALUE_LIMIT = 240
 
-    fun compact(messages: List<ConversationMessage>): List<ConversationMessage> {
+    fun compact(
+        messages: List<ConversationMessage>,
+        steps: List<SessionStep> = emptyList(),
+    ): List<ConversationMessage> {
         if (messages.isEmpty()) return messages
 
         val leadingSystem = messages.firstOrNull() as? ConversationMessage.System
@@ -32,7 +36,7 @@ object ContextWindowSupport {
         }
 
         val olderMessages = body.dropLast(recentMessages.size)
-        val summary = summarize(olderMessages)
+        val summary = summarize(olderMessages, steps, recentMessages)
         return buildList {
             if (leadingSystem != null) add(leadingSystem)
             if (summary.isNotBlank()) add(ConversationMessage.System(summary))
@@ -40,9 +44,20 @@ object ContextWindowSupport {
         }
     }
 
-    private fun summarize(messages: List<ConversationMessage>): String {
+    private fun summarize(
+        messages: List<ConversationMessage>,
+        steps: List<SessionStep>,
+        recentMessages: List<ConversationMessage>,
+    ): String {
         if (messages.isEmpty()) return ""
-        val lines = messages.takeLast(SUMMARY_LINE_LIMIT).mapNotNull(::summarizeMessage).filter { it.isNotBlank() }
+        val recentRoundIds = recentMessages.mapNotNull { it.roundId }.toSet()
+        val groupedLines = summarizeSteps(steps, recentRoundIds)
+        val fallbackLines = messages
+            .filter { it.roundId == null || it.roundId !in recentRoundIds }
+            .takeLast(SUMMARY_LINE_LIMIT)
+            .mapNotNull(::summarizeMessage)
+            .filter { it.isNotBlank() }
+        val lines = (groupedLines + fallbackLines).takeLast(SUMMARY_LINE_LIMIT)
         if (lines.isEmpty()) return ""
         return buildString {
             appendLine("Conversation summary of earlier context:")
@@ -51,6 +66,41 @@ object ContextWindowSupport {
                 appendLine(line)
             }
         }.trim()
+    }
+
+    private fun summarizeSteps(
+        steps: List<SessionStep>,
+        recentRoundIds: Set<String>,
+    ): List<String> {
+        if (steps.isEmpty()) return emptyList()
+        return steps
+            .filter { it.roundId !in recentRoundIds }
+            .takeLast(SUMMARY_GROUP_LIMIT)
+            .mapNotNull(::summarizeStep)
+    }
+
+    private fun summarizeStep(step: SessionStep): String? {
+        val base = step.summary ?: return null
+        val recovery = step.parts
+            .asReversed()
+            .mapNotNull { part ->
+                when (part) {
+                    is SessionStepPart.ToolResult -> part.recoveryHint
+                    is SessionStepPart.Error -> part.recoveryHint
+                    is SessionStepPart.ApprovalDecision -> {
+                        if (part.status == ApprovalRequest.Status.REJECTED) {
+                            "The user rejected ${part.type.name.lowercase()} approval for ${part.title}."
+                        } else {
+                            null
+                        }
+                    }
+                    else -> null
+                }
+            }
+            .firstOrNull()
+            ?.let(::flatten)
+            ?.let(::truncate)
+        return if (recovery == null) base else "$base | recovery: $recovery"
     }
 
     private fun summarizeMessage(message: ConversationMessage): String? {

@@ -41,7 +41,14 @@ class OpenAICompatibleClient(
 
     data class ChatResult(
         val text: String,
+        val outputParts: List<AssistantOutputPart>,
         val toolCalls: List<ToolCall>,
+    )
+
+    data class ChatStreamDelta(
+        val delta: String,
+        val snapshot: String,
+        val outputParts: List<AssistantOutputPart>,
     )
 
     fun testConnection(config: ProviderConfig): ConnectionCheckResult {
@@ -147,7 +154,7 @@ class OpenAICompatibleClient(
 
     fun streamChat(
         request: ChatRequest,
-        listener: (String) -> Unit,
+        listener: (ChatStreamDelta) -> Unit = {},
     ): ChatResult {
         val endpoint = URI.create("${request.providerConfig.baseUrl}/chat/completions")
         val body = mapper.writeValueAsString(
@@ -188,7 +195,7 @@ class OpenAICompatibleClient(
 
     private fun parseSseResponse(
         inputStream: InputStream,
-        listener: (String) -> Unit,
+        listener: (ChatStreamDelta) -> Unit,
     ): ChatResult {
         val text = StringBuilder()
         val toolCalls = linkedMapOf<Int, ToolCallBuilder>()
@@ -211,7 +218,14 @@ class OpenAICompatibleClient(
                     val content = delta.path("content").takeIf { !it.isMissingNode && !it.isNull }?.asText()
                     if (!content.isNullOrEmpty()) {
                         text.append(content)
-                        listener(content)
+                        val snapshot = text.toString()
+                        listener(
+                            ChatStreamDelta(
+                                delta = content,
+                                snapshot = snapshot,
+                                outputParts = AssistantResponseSupport.partition(snapshot),
+                            ),
+                        )
                     }
 
                     val chunkToolCalls = delta.path("tool_calls")
@@ -235,25 +249,31 @@ class OpenAICompatibleClient(
             }
         }
 
-        return ChatResult(text.toString(), toolCalls.values.mapNotNull { it.build() })
+        val finalText = text.toString()
+        return ChatResult(
+            text = finalText,
+            outputParts = AssistantResponseSupport.partition(finalText),
+            toolCalls = toolCalls.values.mapNotNull { it.build() },
+        )
     }
 
     private fun parseJsonResponse(
         inputStream: InputStream,
-        listener: (String) -> Unit,
+        listener: (ChatStreamDelta) -> Unit,
     ): ChatResult {
         inputStream.use { stream ->
             val root = mapper.readTree(stream)
             val choices = root.path("choices")
             if (!choices.isArray || choices.isEmpty) {
-                return ChatResult("", emptyList())
+                return ChatResult("", emptyList(), emptyList())
             }
             val message = choices[0].path("message")
             val content = message.path("content").takeIf { !it.isMissingNode && !it.isNull }?.asText().orEmpty()
+            val outputParts = AssistantResponseSupport.partition(content)
             if (content.isNotEmpty()) {
-                listener(content)
+                listener(ChatStreamDelta(content, content, outputParts))
             }
-            return ChatResult(content, parseToolCalls(message.path("tool_calls")))
+            return ChatResult(content, outputParts, parseToolCalls(message.path("tool_calls")))
         }
     }
 

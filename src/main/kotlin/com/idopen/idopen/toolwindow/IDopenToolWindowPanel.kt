@@ -3,10 +3,15 @@ package com.idopen.idopen.toolwindow
 import com.idopen.idopen.agent.AgentSessionService
 import com.idopen.idopen.agent.ApprovalPayload
 import com.idopen.idopen.agent.ApprovalRequest
+import com.idopen.idopen.agent.AssistantOutputPart
 import com.idopen.idopen.agent.AttachmentContext
 import com.idopen.idopen.agent.ChatSessionSummary
+import com.idopen.idopen.agent.ChatSessionSnapshot
+import com.idopen.idopen.agent.SessionStep
 import com.idopen.idopen.agent.SessionEvent
 import com.idopen.idopen.agent.SessionListener
+import com.idopen.idopen.agent.SessionStepPart
+import com.idopen.idopen.agent.ToolInvocationState
 import com.idopen.idopen.agent.TranscriptEntry
 import com.idopen.idopen.settings.IDopenSettingsState
 import com.intellij.diff.DiffContentFactory
@@ -88,9 +93,11 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val attachmentChips = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
     private val messageAreas = linkedMapOf<String, (String) -> Unit>()
     private val collapsibleBodies = linkedMapOf<String, JComponent>()
+    private val collapsedState = mutableMapOf<String, Boolean>()
     private val emptyState = createEmptyState()
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
     private var currentSessionId: String = service.getCurrentSessionId()
+    private var currentSnapshot: ChatSessionSnapshot = service.getCurrentSessionSnapshot()
     private var updatingSessionSelector = false
     private var lastRenderedRoundId: String? = null
     private var renderedRoundCount: Int = 0
@@ -129,7 +136,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         updateStatus("空闲")
         refreshComposerAction()
         refreshSessionSelector(service.getSessions(), service.getCurrentSessionId())
-        renderCurrentTranscript()
+        renderCurrentSnapshot()
     }
 
     private fun configureSessionSelector() {
@@ -180,17 +187,27 @@ class IDopenToolWindowPanel(private val project: Project) {
         updatingSessionSelector = false
     }
 
-    private fun renderCurrentTranscript() {
+    private fun renderCurrentSnapshot(snapshot: ChatSessionSnapshot = currentSnapshot) {
+        currentSnapshot = snapshot
         messageAreas.clear()
         collapsibleBodies.clear()
         lastRenderedRoundId = null
         renderedRoundCount = 0
         transcriptPanel.removeAll()
-        val transcript = service.getTranscript()
-        if (transcript.isEmpty()) {
+        if (snapshot.transcript.isEmpty()) {
             transcriptPanel.add(emptyState)
         } else {
-            transcript.forEach(::renderEntry)
+            snapshot.transcript
+                .filter { it.roundId == null }
+                .forEach(::renderStandaloneEntry)
+
+            if (snapshot.steps.isEmpty()) {
+                snapshot.transcript
+                    .filter { it.roundId != null }
+                    .forEach(::renderTranscriptEntry)
+            } else {
+                snapshot.steps.forEach(::renderStep)
+            }
         }
         transcriptPanel.revalidate()
         transcriptPanel.repaint()
@@ -425,11 +442,19 @@ class IDopenToolWindowPanel(private val project: Project) {
                     refreshSessionSelector(event.summaries, event.activeSessionId)
                     if (event.activeSessionId != currentSessionId) {
                         currentSessionId = event.activeSessionId
-                        renderCurrentTranscript()
+                        currentSnapshot = service.getCurrentSessionSnapshot()
+                        renderCurrentSnapshot()
                     }
                 }
-                is SessionEvent.EntryAdded -> renderEntry(event.entry)
-                is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.invoke(event.snapshot)
+                is SessionEvent.SessionSnapshotChanged -> {
+                    if (event.snapshot.sessionId == currentSessionId) {
+                        currentSnapshot = event.snapshot
+                        renderCurrentSnapshot(event.snapshot)
+                    }
+                }
+                is SessionEvent.EntryAdded -> Unit
+                is SessionEvent.EntryUpdated -> Unit
+                is SessionEvent.MessageDelta -> Unit
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")
                     refreshComposerAction()
@@ -470,6 +495,256 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun refreshComposerAction() {
         val running = service.isRunning()
         composerActionButton.text = if (running) "停止" else "发送"
+    }
+
+    private fun renderStandaloneEntry(entry: TranscriptEntry) {
+        when (entry) {
+            is TranscriptEntry.System -> addSystemBanner(
+                id = entry.id,
+                stage = "系统",
+                title = "系统",
+                subtitle = null,
+                text = entry.message,
+                createdAt = entry.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.SYSTEM_ACCENT,
+                collapsible = true,
+                startCollapsed = collapsedState[entry.id] ?: false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.Error -> addMessageCard(
+                id = entry.id,
+                stage = "错误",
+                title = "执行错误",
+                subtitle = null,
+                text = entry.message,
+                createdAt = entry.createdAt,
+                background = Palette.ERROR_BG,
+                accent = Palette.ERROR_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            else -> renderTranscriptEntry(entry)
+        }
+    }
+
+    private fun renderStep(step: SessionStep) {
+        maybeRenderRoundSeparator(step.roundId)
+        addStepRow(
+            id = "step-${step.roundId}-${step.stepIndex ?: "pending"}",
+            text = buildString {
+                append(step.title)
+                step.summary?.takeIf { it.isNotBlank() }?.let {
+                    append(" · ")
+                    append(it)
+                }
+            },
+            createdAt = step.startedAt ?: step.finishedAt ?: currentSnapshot.updatedAt,
+            accent = when (step.status) {
+                com.idopen.idopen.agent.SessionStepStatus.RUNNING -> Palette.TOOL_ACCENT
+                com.idopen.idopen.agent.SessionStepStatus.COMPLETED -> Palette.ASSISTANT_ACCENT
+                com.idopen.idopen.agent.SessionStepStatus.FAILED -> Palette.ERROR_ACCENT
+            },
+        )
+
+        val parts = step.parts
+        var index = 0
+        while (index < parts.size) {
+            when (val part = parts[index]) {
+                is SessionStepPart.ToolCall -> {
+                    val next = parts.getOrNull(index + 1) as? SessionStepPart.ToolResult
+                    val resultPart = next?.takeIf { it.callId == part.callId }
+                    renderToolPart(step, part, resultPart, index)
+                    index += if (resultPart != null) 2 else 1
+                }
+
+                is SessionStepPart.ApprovalRequestPart -> {
+                    val next = parts.getOrNull(index + 1) as? SessionStepPart.ApprovalDecision
+                    val decisionPart = next?.takeIf { it.requestId == part.requestId }
+                    renderApprovalPart(step, part, decisionPart, index)
+                    index += if (decisionPart != null) 2 else 1
+                }
+
+                else -> {
+                    renderStepPart(step, part, index)
+                    index += 1
+                }
+            }
+        }
+    }
+
+    private fun renderStepPart(
+        step: SessionStep,
+        part: SessionStepPart,
+        index: Int,
+    ) {
+        val id = "step-${step.roundId}-${step.stepIndex ?: "pending"}-part-$index"
+        when (part) {
+            is SessionStepPart.Context -> addMessageCard(
+                id = id,
+                stage = "上下文",
+                title = "IDE 上下文",
+                subtitle = null,
+                text = part.summary,
+                createdAt = part.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.TOOL_ACCENT,
+                collapsible = true,
+                startCollapsed = collapsedState[id] ?: false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is SessionStepPart.User -> addMessageCard(
+                id = id,
+                stage = "用户",
+                title = "你",
+                subtitle = null,
+                text = part.text,
+                createdAt = part.createdAt,
+                background = Palette.USER_BG,
+                accent = Palette.USER_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = true,
+                codeBlock = false,
+            )
+
+            is SessionStepPart.AssistantResponse -> addMessageCard(
+                id = id,
+                stage = "助手",
+                title = "IDopen",
+                subtitle = null,
+                text = part.text,
+                createdAt = part.createdAt,
+                background = Palette.ASSISTANT_BG,
+                accent = Palette.ASSISTANT_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+                outputParts = part.outputParts,
+            )
+
+            is SessionStepPart.Error -> addMessageCard(
+                id = id,
+                stage = "错误",
+                title = "执行错误",
+                subtitle = null,
+                text = buildString {
+                    append(part.message)
+                    part.recoveryHint?.takeIf { it.isNotBlank() }?.let {
+                        append("\n\nRecovery hint\n")
+                        append(it)
+                    }
+                },
+                createdAt = part.createdAt,
+                background = Palette.ERROR_BG,
+                accent = Palette.ERROR_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is SessionStepPart.System -> addSystemBanner(
+                id = id,
+                stage = "系统",
+                title = "系统",
+                subtitle = null,
+                text = part.message,
+                createdAt = part.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.SYSTEM_ACCENT,
+                collapsible = true,
+                startCollapsed = collapsedState[id] ?: false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            else -> Unit
+        }
+    }
+
+    private fun renderToolPart(
+        step: SessionStep,
+        callPart: SessionStepPart.ToolCall,
+        resultPart: SessionStepPart.ToolResult?,
+        index: Int,
+    ) {
+        val state = resultPart?.state ?: ToolInvocationState.PENDING
+        val accent = if (state == ToolInvocationState.ERROR) Palette.ERROR_ACCENT else Palette.TOOL_ACCENT
+        val subtitle = buildString {
+            append(
+                when (state) {
+                    ToolInvocationState.PENDING -> "等待中"
+                    ToolInvocationState.RUNNING -> "执行中"
+                    ToolInvocationState.COMPLETED -> "已完成"
+                    ToolInvocationState.ERROR -> "失败"
+                },
+            )
+            callPart.title?.takeIf { it.isNotBlank() }?.let {
+                append(" · ")
+                append(it)
+            }
+        }
+        val details = buildString {
+            if (callPart.metadata.isNotEmpty()) {
+                appendLine("metadata")
+                callPart.metadata.entries.sortedBy { it.key }.forEach { (key, value) ->
+                    appendLine("$key: $value")
+                }
+                appendLine()
+            }
+            appendLine("arguments")
+            appendLine(callPart.argumentsJson)
+            resultPart?.output?.takeIf { it.isNotBlank() }?.let {
+                appendLine()
+                appendLine(if (state == ToolInvocationState.ERROR) "error" else "result")
+                appendLine(it)
+            }
+            resultPart?.recoveryHint?.takeIf { it.isNotBlank() }?.let {
+                appendLine()
+                appendLine("recovery hint")
+                appendLine(it)
+            }
+        }.trim()
+        addToolEventRow(
+            id = "step-${step.roundId}-${step.stepIndex ?: "pending"}-tool-$index",
+            stage = "工具",
+            title = callPart.toolName,
+            subtitle = subtitle,
+            text = details,
+            createdAt = callPart.createdAt,
+            accent = accent,
+        )
+    }
+
+    private fun renderApprovalPart(
+        step: SessionStep,
+        requestPart: SessionStepPart.ApprovalRequestPart,
+        decisionPart: SessionStepPart.ApprovalDecision?,
+        index: Int,
+    ) {
+        addApprovalCard(
+            TranscriptEntry.Approval(
+                id = "step-${step.roundId}-${step.stepIndex ?: "pending"}-approval-$index",
+                request = ApprovalRequest(
+                    id = requestPart.requestId,
+                    type = requestPart.type,
+                    title = requestPart.title,
+                    payload = requestPart.payload,
+                    status = decisionPart?.status ?: ApprovalRequest.Status.PENDING,
+                ),
+                createdAt = requestPart.createdAt,
+                roundId = step.roundId,
+            ),
+        )
     }
 
     private fun renderEntry(entry: TranscriptEntry) {
@@ -574,12 +849,196 @@ class IDopenToolWindowPanel(private val project: Project) {
                 codeBlock = false,
             )
 
+            is TranscriptEntry.StepStart -> renderTranscriptEntry(entry)
+
+            is TranscriptEntry.StepFinish -> renderTranscriptEntry(entry)
+
             is TranscriptEntry.Approval -> addApprovalCard(entry)
+
+            else -> renderTranscriptEntry(entry)
         }
     }
 
+    private fun renderTranscriptEntry(entry: TranscriptEntry) {
+        if (transcriptPanel.components.contains(emptyState)) {
+            transcriptPanel.remove(emptyState)
+        }
+        maybeRenderRoundSeparator(entry)
+
+        when (entry) {
+            is TranscriptEntry.User -> addMessageCard(
+                id = entry.id,
+                stage = "用户",
+                title = "你",
+                subtitle = null,
+                text = entry.text,
+                createdAt = entry.createdAt,
+                background = Palette.USER_BG,
+                accent = Palette.USER_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = true,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.Assistant -> addMessageCard(
+                id = entry.id,
+                stage = "助手",
+                title = "IDopen",
+                subtitle = null,
+                text = entry.text,
+                createdAt = entry.createdAt,
+                background = Palette.ASSISTANT_BG,
+                accent = Palette.ASSISTANT_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.ToolCall -> addToolEventRow(
+                id = entry.id,
+                stage = "工具",
+                title = entry.toolName,
+                subtitle = "参数",
+                text = entry.argumentsJson,
+                createdAt = entry.createdAt,
+                accent = Palette.TOOL_ACCENT,
+            )
+
+            is TranscriptEntry.ToolResult -> addToolEventRow(
+                id = entry.id,
+                stage = if (entry.success) "结果" else "结果/错误",
+                title = entry.toolName,
+                subtitle = if (entry.success) "已完成" else "失败",
+                text = entry.output,
+                createdAt = entry.createdAt,
+                accent = if (entry.success) Palette.TOOL_ACCENT else Palette.ERROR_ACCENT,
+            )
+
+            is TranscriptEntry.Approval -> addApprovalCard(entry)
+
+            is TranscriptEntry.StepStart -> addStepRow(
+                id = entry.id,
+                text = "步骤 ${entry.stepIndex} 开始",
+                createdAt = entry.createdAt,
+                accent = Palette.TOOL_ACCENT,
+            )
+
+            is TranscriptEntry.StepFinish -> addStepRow(
+                id = entry.id,
+                text = buildString {
+                    append("步骤 ${entry.stepIndex} ")
+                    append(if (entry.success) "完成" else "结束")
+                    append(" · ")
+                    append(
+                        when (entry.reason) {
+                            "final" -> "直接答复"
+                            "tool-loop" -> "工具循环"
+                            "tool-disabled" -> "工具未启用"
+                            "tool-limit" -> "达到工具上限"
+                            else -> entry.reason
+                        },
+                    )
+                    if (entry.toolCalls > 0) {
+                        append(" · ${entry.toolCalls} 个工具")
+                    }
+                },
+                createdAt = entry.createdAt,
+                accent = if (entry.success) Palette.TOOL_ACCENT else Palette.ERROR_ACCENT,
+            )
+
+            is TranscriptEntry.ToolInvocation -> addToolInvocationRow(entry)
+
+            is TranscriptEntry.Error -> addMessageCard(
+                id = entry.id,
+                stage = "错误",
+                title = "执行错误",
+                subtitle = null,
+                text = entry.message,
+                createdAt = entry.createdAt,
+                background = Palette.ERROR_BG,
+                accent = Palette.ERROR_ACCENT,
+                collapsible = false,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.Context -> addMessageCard(
+                id = entry.id,
+                stage = "上下文",
+                title = "IDE 上下文",
+                subtitle = null,
+                text = entry.summary,
+                createdAt = entry.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.TOOL_ACCENT,
+                collapsible = true,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+
+            is TranscriptEntry.System -> addSystemBanner(
+                id = entry.id,
+                stage = "系统",
+                title = "系统",
+                subtitle = null,
+                text = entry.message,
+                createdAt = entry.createdAt,
+                background = Palette.SYSTEM_BG,
+                accent = Palette.SYSTEM_ACCENT,
+                collapsible = true,
+                startCollapsed = false,
+                alignRight = false,
+                codeBlock = false,
+            )
+        }
+    }
+
+    private fun addStepRow(
+        id: String,
+        text: String,
+        createdAt: Instant,
+        accent: Color,
+    ) {
+        if (messageAreas.containsKey(id)) return
+
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
+        row.isOpaque = false
+        row.maximumSize = Dimension(Int.MAX_VALUE, 22)
+        row.alignmentX = Component.LEFT_ALIGNMENT
+
+        val dot = JPanel()
+        dot.background = accent
+        dot.preferredSize = Dimension(6, 6)
+        dot.maximumSize = Dimension(6, 6)
+        dot.minimumSize = Dimension(6, 6)
+        dot.border = BorderFactory.createEmptyBorder()
+
+        val label = JBLabel(text)
+        label.foreground = JBColor.GRAY
+        label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 1f)
+
+        val timeLabel = JBLabel(formatTime(createdAt))
+        timeLabel.foreground = JBColor.GRAY
+
+        row.add(dot)
+        row.add(label)
+        row.add(timeLabel)
+
+        transcriptPanel.add(row)
+        transcriptPanel.add(Box.createRigidArea(Dimension(0, 4)))
+        messageAreas[id] = {}
+    }
+
     private fun maybeRenderRoundSeparator(entry: TranscriptEntry) {
-        val roundId = entry.roundId ?: return
+        maybeRenderRoundSeparator(entry.roundId)
+    }
+
+    private fun maybeRenderRoundSeparator(roundId: String?) {
+        roundId ?: return
         if (roundId == lastRenderedRoundId) return
         lastRenderedRoundId = roundId
         renderedRoundCount += 1
@@ -642,6 +1101,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         startCollapsed: Boolean,
         alignRight: Boolean,
         codeBlock: Boolean,
+        outputParts: List<AssistantOutputPart> = emptyList(),
     ) {
         if (messageAreas.containsKey(id)) return
 
@@ -715,7 +1175,11 @@ class IDopenToolWindowPanel(private val project: Project) {
         }
 
         val markdownBody = if (!codeBlock && bubbleStyle && !alignRight) {
-            createMarkdownView(text, card.background)
+            if (outputParts.isNotEmpty()) {
+                createOutputPartsView(outputParts, card.background)
+            } else {
+                createMarkdownView(text, card.background)
+            }
         } else {
             null
         }
@@ -770,12 +1234,14 @@ class IDopenToolWindowPanel(private val project: Project) {
                 val expanded = !contentComponent.isVisible
                 contentComponent.isVisible = expanded
                 toggle.text = if (expanded) "收起" else "展开"
+                collapsedState[id] = !expanded
                 transcriptPanel.revalidate()
                 transcriptPanel.repaint()
             }
             contentComponent.isVisible = !startCollapsed
             right.add(toggle)
             collapsibleBodies[id] = contentComponent
+            collapsedState.putIfAbsent(id, startCollapsed)
         }
 
         header.add(left, BorderLayout.WEST)
@@ -787,7 +1253,11 @@ class IDopenToolWindowPanel(private val project: Project) {
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
         messageAreas[id] = { value ->
             if (markdownBody != null) {
-                markdownBody.text = markdownToHtml(value)
+                markdownBody.text = if (outputParts.isNotEmpty()) {
+                    outputPartsToHtml(outputParts)
+                } else {
+                    markdownToHtml(value)
+                }
             } else {
                 plainBody.text = value
             }
@@ -973,6 +1443,55 @@ class IDopenToolWindowPanel(private val project: Project) {
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 4)))
         messageAreas[id] = { value -> body.text = value }
         collapsibleBodies[id] = content
+    }
+
+    private fun addToolInvocationRow(entry: TranscriptEntry.ToolInvocation) {
+        val subtitle = when (entry.state) {
+            com.idopen.idopen.agent.ToolInvocationState.PENDING -> "等待中"
+            com.idopen.idopen.agent.ToolInvocationState.RUNNING -> "执行中"
+            com.idopen.idopen.agent.ToolInvocationState.COMPLETED -> "已完成"
+            com.idopen.idopen.agent.ToolInvocationState.ERROR -> "失败"
+        }
+        val headerSubtitle = entry.title?.takeIf { it.isNotBlank() }?.let { "$subtitle · $it" } ?: subtitle
+        val accent = when (entry.state) {
+            com.idopen.idopen.agent.ToolInvocationState.ERROR -> Palette.ERROR_ACCENT
+            else -> Palette.TOOL_ACCENT
+        }
+        val details = buildString {
+            entry.title?.takeIf { it.isNotBlank() }?.let { title ->
+                append("阶段")
+                append("\n")
+                append(title)
+                append("\n\n")
+            }
+            if (entry.metadata.isNotEmpty()) {
+                append("元数据")
+                append("\n")
+                entry.metadata.entries.sortedBy { it.key }.forEach { (key, value) ->
+                    append("$key: $value")
+                    append("\n")
+                }
+                append("\n")
+            }
+            append("参数")
+            append("\n")
+            append(entry.argumentsJson)
+            entry.output?.takeIf { it.isNotBlank() }?.let { output ->
+                append("\n\n")
+                append(if (entry.state == com.idopen.idopen.agent.ToolInvocationState.ERROR) "错误输出" else "执行结果")
+                append("\n")
+                append(output)
+            }
+        }
+        addToolEventRow(
+            id = entry.id,
+            stage = "工具",
+            title = entry.toolName,
+            subtitle = headerSubtitle,
+            text = details,
+            createdAt = entry.createdAt,
+            accent = accent,
+        )
     }
 
     private fun addApprovalCard(entry: TranscriptEntry.Approval) {
@@ -1355,6 +1874,20 @@ class IDopenToolWindowPanel(private val project: Project) {
         }
     }
 
+    private fun createOutputPartsView(outputParts: List<AssistantOutputPart>, backgroundColor: Color): JEditorPane {
+        return JEditorPane("text/html", outputPartsToHtml(outputParts)).apply {
+            isEditable = false
+            isOpaque = false
+            border = BorderFactory.createEmptyBorder()
+            margin = JBInsets(0, 0, 0, 0)
+            putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
+            font = JBLabel().font
+            foreground = JBColor.foreground()
+            caretColor = foreground
+            background = backgroundColor
+        }
+    }
+
     private fun markdownToHtml(markdown: String): String {
         val foreground = colorToHex(JBColor.foreground())
         val muted = colorToHex(JBColor.GRAY)
@@ -1468,6 +2001,61 @@ class IDopenToolWindowPanel(private val project: Project) {
                   li { margin: 0 0 4px 0; }
                   code { font-family: monospace; color: $codeForeground; background: $codeBackground; border: 1px solid $codeBorder; padding: 1px 4px; }
                   pre { margin: 6px 0 8px 0; padding: 8px 10px; color: $codeForeground; background: $codeBackground; border: 1px solid $codeBorder; }
+                  pre code { border: 0; padding: 0; background: transparent; }
+                  strong { font-weight: 700; }
+                  em { color: $muted; font-style: italic; }
+                </style>
+              </head>
+              <body>$html</body>
+            </html>
+        """.trimIndent()
+    }
+
+    private fun outputPartsToHtml(parts: List<AssistantOutputPart>): String {
+        val foreground = colorToHex(JBColor.foreground())
+        val muted = colorToHex(JBColor.GRAY)
+        val codeBackground = colorToHex(Palette.CODE_BG)
+        val codeBorder = colorToHex(Palette.CODE_BORDER)
+        val codeForeground = colorToHex(Palette.CODE_FG)
+        val html = buildString {
+            parts.forEach { part ->
+                when (part) {
+                    is AssistantOutputPart.Text -> {
+                        if (part.text.isNotBlank()) {
+                            append("<p>")
+                            append(part.text.lines().joinToString("<br/>") { applyInlineMarkdown(it) })
+                            append("</p>")
+                        }
+                    }
+
+                    is AssistantOutputPart.ListBlock -> {
+                        append(if (part.ordered) "<ol>" else "<ul>")
+                        part.items.forEach { item ->
+                            append("<li>")
+                            append(applyInlineMarkdown(item))
+                            append("</li>")
+                        }
+                        append(if (part.ordered) "</ol>" else "</ul>")
+                    }
+
+                    is AssistantOutputPart.CodeBlock -> {
+                        append("<pre><code>")
+                        append(escapeHtml(part.code))
+                        append("</code></pre>")
+                    }
+                }
+            }
+        }
+        return """
+            <html>
+              <head>
+                <style>
+                  body { color: $foreground; font-family: sans-serif; font-size: 12px; margin: 0; }
+                  p { margin: 0 0 8px 0; }
+                  ul, ol { margin: 0 0 8px 18px; padding: 0; }
+                  li { margin: 0 0 4px 0; }
+                  code { font-family: monospace; color: $codeForeground; background: $codeBackground; border: 1px solid $codeBorder; padding: 1px 4px; }
+                  pre { margin: 6px 0 8px 0; padding: 8px 10px; color: $codeForeground; background: $codeBackground; border: 1px solid $codeBorder; white-space: pre-wrap; word-break: break-word; }
                   pre code { border: 0; padding: 0; background: transparent; }
                   strong { font-weight: 700; }
                   em { color: $muted; font-style: italic; }

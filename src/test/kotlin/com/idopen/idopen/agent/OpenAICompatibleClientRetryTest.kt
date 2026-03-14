@@ -2,11 +2,11 @@ package com.idopen.idopen.agent
 
 import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.net.Authenticator
 import java.net.CookieHandler
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 import java.net.URI
-import java.net.Authenticator
 import java.net.http.HttpClient
 import java.net.http.HttpHeaders
 import java.net.http.HttpRequest
@@ -81,16 +81,18 @@ class OpenAICompatibleClientRetryTest {
         val result = client.streamChat(
             OpenAICompatibleClient.ChatRequest(
                 providerConfig = providerConfig(),
-                messages = listOf(ConversationMessage.User("你好")),
+                messages = listOf(ConversationMessage.User("你好", "round-1")),
                 tools = emptyList(),
             ),
         ) { delta ->
-            streamed += delta
+            streamed = delta.snapshot
         }
 
         assertEquals("你好", result.text)
         assertEquals("你好", streamed)
         assertTrue(result.toolCalls.isEmpty())
+        assertEquals(1, result.outputParts.size)
+        assertTrue(result.outputParts.first() is AssistantOutputPart.Text)
         assertEquals(2, httpClient.sendCount)
     }
 
