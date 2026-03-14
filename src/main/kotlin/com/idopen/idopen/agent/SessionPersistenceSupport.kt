@@ -130,6 +130,7 @@ object SessionPersistenceSupport {
                     entry.finishedAt?.let { put("finishedAt", it.toEpochMilli()) }
                     entry.output?.let { put("output", it) }
                     entry.success?.let { put("success", it) }
+                    entry.recoveryHint?.let { put("recoveryHint", it) }
                     put("createdAt", entry.createdAt.toEpochMilli())
                 }
                 is TranscriptEntry.Approval -> {
@@ -153,6 +154,7 @@ object SessionPersistenceSupport {
                 is TranscriptEntry.Error -> {
                     put("kind", "error")
                     put("message", entry.message)
+                    entry.recoveryHint?.let { put("recoveryHint", it) }
                     put("createdAt", entry.createdAt.toEpochMilli())
                 }
                 is TranscriptEntry.Context -> {
@@ -213,6 +215,7 @@ object SessionPersistenceSupport {
                     ?.let(Instant::ofEpochMilli),
                 output = node.path("output").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
                 success = node.path("success").takeIf { !it.isMissingNode && !it.isNull }?.asBoolean(),
+                recoveryHint = node.path("recoveryHint").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
                 createdAt = createdAt,
                 roundId = roundId,
             )
@@ -232,7 +235,13 @@ object SessionPersistenceSupport {
                 createdAt = createdAt,
                 roundId = roundId,
             )
-            "error" -> TranscriptEntry.Error(id, node.path("message").asText(), createdAt, roundId)
+            "error" -> TranscriptEntry.Error(
+                id = id,
+                message = node.path("message").asText(),
+                recoveryHint = node.path("recoveryHint").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
             "context" -> TranscriptEntry.Context(id, node.path("summary").asText(), createdAt, roundId)
             else -> TranscriptEntry.System(id, node.path("message").asText(), createdAt, roundId)
         }

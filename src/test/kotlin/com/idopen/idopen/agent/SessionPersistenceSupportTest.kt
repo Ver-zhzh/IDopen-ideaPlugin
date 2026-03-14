@@ -31,6 +31,7 @@ class SessionPersistenceSupportTest {
                         finishedAt = now.plusSeconds(1),
                         output = "ok",
                         success = true,
+                        recoveryHint = "Retry with a narrower file path.",
                         createdAt = now,
                         roundId = "round-1",
                     ),
@@ -80,6 +81,7 @@ class SessionPersistenceSupportTest {
         assertEquals(now, toolInvocation.startedAt)
         assertEquals(now.plusSeconds(1), toolInvocation.finishedAt)
         assertEquals("ok", toolInvocation.output)
+        assertEquals("Retry with a narrower file path.", toolInvocation.recoveryHint)
         val stepFinish = assertIs<TranscriptEntry.StepFinish>(decoded.sessions.first().transcript[5])
         assertEquals("tool-loop", stepFinish.reason)
         assertEquals(1, stepFinish.toolCalls)

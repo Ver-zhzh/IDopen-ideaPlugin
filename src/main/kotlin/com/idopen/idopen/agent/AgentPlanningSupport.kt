@@ -53,6 +53,7 @@ object AgentPlanningSupport {
         val lastFailedStep = snapshot.steps
             .filter { it.roundId != roundId }
             .lastOrNull { it.status == SessionStepStatus.FAILED }
+        val recoveryHint = lastFailedStep?.let(::extractRecoveryHint)
         val planningNotes = buildList {
             if (!runtimeProfile.includeTools) {
                 add("Tool calling is unavailable for the current model, so prefer direct analysis over tool-dependent plans.")
@@ -70,11 +71,34 @@ object AgentPlanningSupport {
         return AgentTurnPlan(
             subtasks = subtasks,
             recommendedTools = recommendedTools,
-            recoveryHint = lastFailedStep?.summary?.let {
+            recoveryHint = recoveryHint ?: lastFailedStep?.summary?.let {
                 "The previous failed step was: $it. Avoid repeating the same action unchanged."
             },
             planningNotes = planningNotes,
         )
+    }
+
+    private fun extractRecoveryHint(step: SessionStep): String? {
+        val explicitHint = step.parts
+            .asReversed()
+            .mapNotNull { part ->
+                when (part) {
+                    is SessionStepPart.ToolResult -> part.recoveryHint
+                    is SessionStepPart.Error -> part.recoveryHint
+                    is SessionStepPart.ApprovalDecision -> {
+                        if (part.status == ApprovalRequest.Status.REJECTED) {
+                            "The user rejected ${part.type.name.lowercase()} approval for ${part.title}. Explain the need more clearly or choose a safer alternative."
+                        } else {
+                            null
+                        }
+                    }
+                    else -> null
+                }
+            }
+            .firstOrNull()
+        return explicitHint?.let {
+            "The previous failed step suggests: $it"
+        }
     }
 
     private fun splitSubtasks(userRequest: String): List<String> {

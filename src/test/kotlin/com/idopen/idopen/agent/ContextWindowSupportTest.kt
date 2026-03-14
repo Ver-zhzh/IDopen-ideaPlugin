@@ -95,6 +95,7 @@ class ContextWindowSupportTest {
                         state = ToolInvocationState.COMPLETED,
                         output = "output $index",
                         success = true,
+                        recoveryHint = if (index == 0) "Re-read the file window before retrying the patch." else null,
                         roundId = "round-$index",
                     ),
                     TranscriptEntry.StepFinish("finish-$index", index + 1, "tool-loop", 1, true, roundId = "round-$index"),
@@ -107,6 +108,7 @@ class ContextWindowSupportTest {
 
         assertTrue(summary.content.contains("Step 1"))
         assertTrue(summary.content.contains("tools: read_file"))
+        assertTrue(summary.content.contains("recovery:"))
         assertEquals("request 9", compacted.filterIsInstance<ConversationMessage.User>().last().content)
     }
 }

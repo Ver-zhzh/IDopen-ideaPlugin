@@ -54,7 +54,19 @@ class AgentPlanningSupportTest {
             finishedAt = Instant.parse("2026-03-14T08:00:02Z"),
             reason = "tool-loop",
             toolCalls = 1,
-            parts = emptyList(),
+            parts = listOf(
+                SessionStepPart.ToolResult(
+                    callId = "call-1",
+                    toolName = "read_file",
+                    state = ToolInvocationState.ERROR,
+                    metadata = emptyMap(),
+                    output = "not found",
+                    success = false,
+                    recoveryHint = "Re-check the path, then inspect the project tree before retrying read_file.",
+                    createdAt = Instant.parse("2026-03-14T08:00:01Z"),
+                    finishedAt = Instant.parse("2026-03-14T08:00:02Z"),
+                ),
+            ),
         )
         val snapshot = ChatSessionSnapshot(
             sessionId = "session-1",
@@ -79,6 +91,7 @@ class AgentPlanningSupportTest {
             ),
         )
 
-        assertEquals(true, plan.recoveryHint?.contains("previous failed step"))
+        assertEquals(true, plan.recoveryHint?.contains("suggests"))
+        assertEquals(true, plan.recoveryHint?.contains("project tree"))
     }
 }

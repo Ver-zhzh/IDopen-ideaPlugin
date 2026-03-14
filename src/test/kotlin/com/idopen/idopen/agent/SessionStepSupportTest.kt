@@ -156,6 +156,7 @@ class SessionStepSupportTest {
                         metadata = mapOf("path" to "README.md"),
                         output = "content",
                         success = true,
+                        recoveryHint = "Re-read the file window if the next patch fails.",
                         createdAt = now,
                         startedAt = now,
                         finishedAt = now.plusSeconds(1),
@@ -199,6 +200,7 @@ class SessionStepSupportTest {
         val toolResultPart = assertIs<SessionStepPart.ToolResult>(step.parts[4])
         assertEquals(ToolInvocationState.COMPLETED, toolResultPart.state)
         assertEquals("README.md", toolResultPart.metadata["path"])
+        assertEquals("Re-read the file window if the next patch fails.", toolResultPart.recoveryHint)
         val approvalPart = assertIs<SessionStepPart.ApprovalRequestPart>(step.parts[5])
         assertEquals("request-1", approvalPart.requestId)
         assertEquals(ApprovalRequest.Type.PATCH, approvalPart.type)

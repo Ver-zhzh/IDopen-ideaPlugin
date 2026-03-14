@@ -76,7 +76,31 @@ object ContextWindowSupport {
         return steps
             .filter { it.roundId !in recentRoundIds }
             .takeLast(SUMMARY_GROUP_LIMIT)
-            .mapNotNull { it.summary }
+            .mapNotNull(::summarizeStep)
+    }
+
+    private fun summarizeStep(step: SessionStep): String? {
+        val base = step.summary ?: return null
+        val recovery = step.parts
+            .asReversed()
+            .mapNotNull { part ->
+                when (part) {
+                    is SessionStepPart.ToolResult -> part.recoveryHint
+                    is SessionStepPart.Error -> part.recoveryHint
+                    is SessionStepPart.ApprovalDecision -> {
+                        if (part.status == ApprovalRequest.Status.REJECTED) {
+                            "The user rejected ${part.type.name.lowercase()} approval for ${part.title}."
+                        } else {
+                            null
+                        }
+                    }
+                    else -> null
+                }
+            }
+            .firstOrNull()
+            ?.let(::flatten)
+            ?.let(::truncate)
+        return if (recovery == null) base else "$base | recovery: $recovery"
     }
 
     private fun summarizeMessage(message: ConversationMessage): String? {

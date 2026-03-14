@@ -239,6 +239,7 @@ sealed interface SessionStepPart {
         val metadata: Map<String, String>,
         val output: String?,
         val success: Boolean?,
+        val recoveryHint: String? = null,
         val createdAt: Instant,
         val finishedAt: Instant?,
     ) : SessionStepPart
@@ -262,6 +263,7 @@ sealed interface SessionStepPart {
 
     data class Error(
         val message: String,
+        val recoveryHint: String? = null,
         val createdAt: Instant,
     ) : SessionStepPart
 
@@ -336,6 +338,7 @@ sealed interface TranscriptEntry {
         var finishedAt: Instant? = null,
         var output: String? = null,
         var success: Boolean? = null,
+        var recoveryHint: String? = null,
         val createdAt: Instant = Instant.now(),
         override val roundId: String? = null,
     ) : TranscriptEntry
@@ -367,6 +370,7 @@ sealed interface TranscriptEntry {
     data class Error(
         override val id: String,
         val message: String,
+        val recoveryHint: String? = null,
         val createdAt: Instant = Instant.now(),
         override val roundId: String? = null,
     ) : TranscriptEntry

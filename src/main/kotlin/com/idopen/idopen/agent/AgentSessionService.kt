@@ -341,6 +341,15 @@ class AgentSessionService(private val project: Project) {
                 toolEntry.finishedAt = Instant.now()
                 toolEntry.output = output.content
                 toolEntry.success = output.success
+                toolEntry.recoveryHint = output.recoveryHint ?: if (!output.success) {
+                    FailureRecoverySupport.toolHint(
+                        toolName = toolCall.name,
+                        failureText = output.content,
+                        argumentsJson = toolCall.argumentsJson,
+                    )
+                } else {
+                    null
+                }
                 session.history += ConversationMessage.Tool(
                     toolCallId = toolCall.id,
                     toolName = toolCall.name,
@@ -449,10 +458,12 @@ class AgentSessionService(private val project: Project) {
 
     private fun emitFailure(session: SessionState?, message: String, roundId: String? = currentRunRoundId) {
         val target = session ?: currentSession()
-        FailureRecoverySupport.runtimeHint(message)?.let { appendRecoveryHint(target, it, roundId) }
+        val recoveryHint = FailureRecoverySupport.runtimeHint(message)
+        recoveryHint?.let { appendRecoveryHint(target, it, roundId) }
         val entry = TranscriptEntry.Error(
             id = nextId("error"),
             message = message,
+            recoveryHint = recoveryHint,
             roundId = roundId,
         )
         appendEntry(target, entry)

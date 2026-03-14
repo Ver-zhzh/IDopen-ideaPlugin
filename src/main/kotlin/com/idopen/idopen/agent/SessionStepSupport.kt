@@ -164,6 +164,7 @@ object SessionStepSupport {
             is TranscriptEntry.Approval -> null
             is TranscriptEntry.Error -> SessionStepPart.Error(
                 message = entry.message,
+                recoveryHint = entry.recoveryHint,
                 createdAt = entry.createdAt,
             )
             is TranscriptEntry.System -> SessionStepPart.System(
@@ -201,6 +202,7 @@ object SessionStepSupport {
                                 metadata = entry.metadata,
                                 output = entry.output,
                                 success = entry.success,
+                                recoveryHint = entry.recoveryHint,
                                 createdAt = entry.createdAt,
                                 finishedAt = entry.finishedAt,
                             ),

@@ -636,7 +636,13 @@ class IDopenToolWindowPanel(private val project: Project) {
                 stage = "错误",
                 title = "执行错误",
                 subtitle = null,
-                text = part.message,
+                text = buildString {
+                    append(part.message)
+                    part.recoveryHint?.takeIf { it.isNotBlank() }?.let {
+                        append("\n\nRecovery hint\n")
+                        append(it)
+                    }
+                },
                 createdAt = part.createdAt,
                 background = Palette.ERROR_BG,
                 accent = Palette.ERROR_ACCENT,
@@ -700,6 +706,11 @@ class IDopenToolWindowPanel(private val project: Project) {
             resultPart?.output?.takeIf { it.isNotBlank() }?.let {
                 appendLine()
                 appendLine(if (state == ToolInvocationState.ERROR) "error" else "result")
+                appendLine(it)
+            }
+            resultPart?.recoveryHint?.takeIf { it.isNotBlank() }?.let {
+                appendLine()
+                appendLine("recovery hint")
                 appendLine(it)
             }
         }.trim()
