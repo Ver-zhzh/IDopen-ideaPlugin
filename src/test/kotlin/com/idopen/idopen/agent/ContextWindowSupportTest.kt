@@ -111,4 +111,39 @@ class ContextWindowSupportTest {
         assertTrue(summary.content.contains("recovery:"))
         assertEquals("request 9", compacted.filterIsInstance<ConversationMessage.User>().last().content)
     }
+
+    @Test
+    fun `prepare request messages merges all system messages at the beginning`() {
+        val prepared = ContextWindowSupport.prepareRequestMessages(
+            messages = listOf(
+                ConversationMessage.System("base prompt"),
+                ConversationMessage.User("first question", "round-1"),
+                ConversationMessage.Assistant("first answer", roundId = "round-1"),
+                ConversationMessage.System("Recovery hint: narrow the scope", "round-1"),
+                ConversationMessage.User("second question", "round-2"),
+            ),
+            prefixedSystemMessages = listOf(
+                ConversationMessage.System("Execution plan:\n1. inspect", "round-2"),
+                ConversationMessage.System("Planning notes:\n- read exact files", "round-2"),
+            ),
+        )
+
+        assertEquals(4, prepared.size)
+        val mergedSystem = assertIs<ConversationMessage.System>(prepared.first())
+        assertTrue(mergedSystem.content.contains("base prompt"))
+        assertTrue(mergedSystem.content.contains("Execution plan:"))
+        assertTrue(mergedSystem.content.contains("Recovery hint: narrow the scope"))
+        assertTrue(prepared.drop(1).none { it is ConversationMessage.System })
+        assertEquals(
+            listOf("first question", "first answer", "second question"),
+            prepared.drop(1).map {
+                when (it) {
+                    is ConversationMessage.User -> it.content
+                    is ConversationMessage.Assistant -> it.content
+                    is ConversationMessage.Tool -> it.content
+                    is ConversationMessage.System -> error("unexpected system message")
+                }
+            },
+        )
+    }
 }

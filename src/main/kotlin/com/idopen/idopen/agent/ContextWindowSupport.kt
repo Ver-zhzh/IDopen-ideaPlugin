@@ -44,6 +44,35 @@ object ContextWindowSupport {
         }
     }
 
+    fun prepareRequestMessages(
+        messages: List<ConversationMessage>,
+        prefixedSystemMessages: List<ConversationMessage.System> = emptyList(),
+    ): List<ConversationMessage> {
+        if (messages.isEmpty() && prefixedSystemMessages.isEmpty()) return emptyList()
+
+        val mergedSystemContent = buildList {
+            prefixedSystemMessages.forEach { message ->
+                message.content.trim().takeIf { it.isNotBlank() }?.let(::add)
+            }
+            messages.filterIsInstance<ConversationMessage.System>().forEach { message ->
+                message.content.trim().takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+        val body = messages.filterNot { it is ConversationMessage.System }
+        return buildList {
+            if (mergedSystemContent.isNotEmpty()) {
+                add(
+                    ConversationMessage.System(
+                        content = mergedSystemContent.joinToString("\n\n"),
+                        roundId = prefixedSystemMessages.lastOrNull()?.roundId
+                            ?: messages.filterIsInstance<ConversationMessage.System>().lastOrNull()?.roundId,
+                    ),
+                )
+            }
+            addAll(body)
+        }
+    }
+
     private fun summarize(
         messages: List<ConversationMessage>,
         steps: List<SessionStep>,

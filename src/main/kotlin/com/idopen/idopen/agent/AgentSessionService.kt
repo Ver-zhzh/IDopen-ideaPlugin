@@ -587,19 +587,10 @@ class AgentSessionService(private val project: Project) {
             steps = session.steps,
         )
         val planMessages = turnPlan.asSystemMessages(roundId)
-        if (planMessages.isEmpty()) return compacted
-
-        val leadingSystem = compacted.firstOrNull() as? ConversationMessage.System
-        return buildList {
-            if (leadingSystem != null) {
-                add(leadingSystem)
-                addAll(planMessages)
-                addAll(compacted.drop(1))
-            } else {
-                addAll(planMessages)
-                addAll(compacted)
-            }
-        }
+        return ContextWindowSupport.prepareRequestMessages(
+            messages = compacted,
+            prefixedSystemMessages = planMessages,
+        )
     }
 
     private fun latestRoundUserText(session: SessionState, roundId: String): String {
