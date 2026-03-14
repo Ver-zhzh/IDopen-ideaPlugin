@@ -38,6 +38,8 @@ import java.awt.Graphics2D
 import java.awt.RenderingHints
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import java.time.Instant
@@ -66,6 +68,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val transcriptScrollPane = JBScrollPane(transcriptPanel)
     private val sessionSelector = JComboBox<ChatSessionSummary>()
     private val newSessionButton = JButton("+")
+    private val composerFrame = JPanel(BorderLayout())
     private val composerActionButton = JButton("发送")
     private val inputArea = PromptTextArea(
         "输入你的需求，例如：解释当前类、修复这个错误、搜索某个调用链，或生成修改方案...",
@@ -265,13 +268,25 @@ class IDopenToolWindowPanel(private val project: Project) {
         top.add(title, BorderLayout.WEST)
         top.add(hint, BorderLayout.EAST)
 
-        val editorWrap = JPanel(BorderLayout())
-        editorWrap.background = Palette.COMPOSER_BG
-        editorWrap.border = BorderFactory.createCompoundBorder(
+        composerFrame.removeAll()
+        composerFrame.background = Palette.COMPOSER_BG
+        composerFrame.add(inputArea, BorderLayout.CENTER)
+        composerFrame.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(Palette.COMPOSER_BORDER),
             BorderFactory.createEmptyBorder(4, 4, 4, 4),
         )
-        editorWrap.add(inputArea, BorderLayout.CENTER)
+        inputArea.addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent) = refreshComposerChrome()
+
+            override fun focusLost(e: FocusEvent) = refreshComposerChrome()
+        })
+        composerActionButton.isOpaque = true
+        composerActionButton.foreground = JBColor(Color(255, 255, 255), Color(255, 255, 255))
+        composerActionButton.background = Palette.ACTION_SEND_BG
+        composerActionButton.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Palette.ACTION_SEND_BORDER),
+            BorderFactory.createEmptyBorder(4, 14, 4, 14),
+        )
 
         val toggles = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         toggles.isOpaque = false
@@ -288,6 +303,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         footer.isOpaque = false
         footer.add(toggles, BorderLayout.WEST)
         footer.add(composerActionButton, BorderLayout.EAST)
+        refreshComposerChrome()
 
         val composer = JPanel()
         composer.layout = BoxLayout(composer, BoxLayout.Y_AXIS)
@@ -300,11 +316,29 @@ class IDopenToolWindowPanel(private val project: Project) {
         composer.add(Box.createRigidArea(Dimension(0, 8)))
         composer.add(attachmentChips)
         composer.add(Box.createRigidArea(Dimension(0, 8)))
-        composer.add(editorWrap)
+        composer.add(composerFrame)
         composer.add(Box.createRigidArea(Dimension(0, 10)))
         composer.add(footer)
         refreshAttachmentChips()
+        refreshComposerChrome()
         return composer
+    }
+
+    private fun refreshComposerChrome() {
+        val running = service.isRunning()
+        val focused = inputArea.hasFocus()
+        composerFrame.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(
+                if (focused) Palette.COMPOSER_ACTIVE_BORDER else Palette.COMPOSER_BORDER,
+                if (focused) 2 else 1,
+            ),
+            BorderFactory.createEmptyBorder(4, 4, 4, 4),
+        )
+        composerActionButton.background = if (running) Palette.ACTION_STOP_BG else Palette.ACTION_SEND_BG
+        composerActionButton.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(if (running) Palette.ACTION_STOP_BORDER else Palette.ACTION_SEND_BORDER),
+            BorderFactory.createEmptyBorder(4, 14, 4, 14),
+        )
     }
 
     private fun createEmptyState(): JPanel {
@@ -382,15 +416,18 @@ class IDopenToolWindowPanel(private val project: Project) {
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")
                     refreshComposerAction()
+                    refreshComposerChrome()
                     refreshHeader()
                 }
                 is SessionEvent.RunCompleted -> {
                     updateStatus("已完成")
                     refreshComposerAction()
+                    refreshComposerChrome()
                 }
                 is SessionEvent.RunFailed -> {
                     updateStatus("失败")
                     refreshComposerAction()
+                    refreshComposerChrome()
                 }
                 is SessionEvent.ToolRequested -> Unit
                 is SessionEvent.ToolCompleted -> Unit
@@ -1001,7 +1038,15 @@ class IDopenToolWindowPanel(private val project: Project) {
         card.add(actions, BorderLayout.SOUTH)
         refreshApprovalUi()
 
-        transcriptPanel.add(wrapCardRow(card, false))
+        val row = JPanel(BorderLayout(0, 0))
+        row.isOpaque = false
+        row.maximumSize = Dimension(620, Int.MAX_VALUE)
+        val gutter = TimelineGutter(accent)
+        gutter.border = BorderFactory.createEmptyBorder(0, 0, 0, 8)
+        row.add(gutter, BorderLayout.WEST)
+        row.add(card, BorderLayout.CENTER)
+
+        transcriptPanel.add(wrapCardRow(row, false))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
         collapsibleBodies[entry.request.id] = body
     }
@@ -1209,6 +1254,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun createPillLabel(background: Color, border: Color): JBLabel {
         val label = JBLabel()
         label.isOpaque = true
+        label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 1f)
         setPillColors(label, background, border)
         return label
     }
@@ -1217,7 +1263,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         label.background = background
         label.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(border),
-            BorderFactory.createEmptyBorder(3, 8, 3, 8),
+            BorderFactory.createEmptyBorder(2, 7, 2, 7),
         )
     }
 
@@ -1386,6 +1432,11 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val COMPOSER_BG = JBColor(Color(255, 255, 255), Color(35, 38, 44))
         val COMPOSER_BORDER = JBColor(Color(196, 204, 215), Color(86, 92, 102))
+        val COMPOSER_ACTIVE_BORDER = JBColor(Color(94, 142, 231), Color(102, 146, 229))
+        val ACTION_SEND_BG = JBColor(Color(78, 119, 214), Color(72, 112, 205))
+        val ACTION_SEND_BORDER = JBColor(Color(66, 104, 191), Color(92, 131, 216))
+        val ACTION_STOP_BG = JBColor(Color(197, 86, 86), Color(174, 73, 73))
+        val ACTION_STOP_BORDER = JBColor(Color(171, 71, 71), Color(196, 97, 97))
 
         val USER_BUBBLE_BORDER = JBColor(Color(124, 159, 230), Color(86, 126, 214))
         val ASSISTANT_BUBBLE_BORDER = JBColor(Color(116, 181, 143), Color(76, 148, 109))
