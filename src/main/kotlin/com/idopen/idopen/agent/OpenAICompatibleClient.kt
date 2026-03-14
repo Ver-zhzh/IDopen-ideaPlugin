@@ -3,6 +3,7 @@ package com.idopen.idopen.agent
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.net.URI
@@ -11,12 +12,20 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.time.Duration
+import kotlin.math.min
 
 class OpenAICompatibleClient(
     private val httpClient: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(30))
         .build(),
+    private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
 ) {
+    companion object {
+        private const val MAX_RETRIES = 2
+        private const val INITIAL_RETRY_DELAY_MS = 350L
+        private val RETRYABLE_STATUS_CODES = setOf(408, 409, 425, 429, 500, 502, 503, 504)
+    }
+
     private val mapper = ObjectMapper()
 
     data class ConnectionCheckResult(
@@ -35,11 +44,6 @@ class OpenAICompatibleClient(
         val toolCalls: List<ToolCall>,
     )
 
-    data class CapabilityProbeResult(
-        val capability: ToolCapability,
-        val models: List<String> = emptyList(),
-    )
-
     fun testConnection(config: ProviderConfig): ConnectionCheckResult {
         val models = listModels(config)
         val message = if (models.isEmpty()) {
@@ -52,15 +56,17 @@ class OpenAICompatibleClient(
 
     fun listModels(config: ProviderConfig): List<String> {
         val endpoint = URI.create("${config.baseUrl}/models")
-        val response = httpClient.send(
-            requestBuilder(config, endpoint)
-                .header("Accept", "application/json")
-                .GET()
-                .build(),
-            HttpResponse.BodyHandlers.ofInputStream(),
+        val response = sendWithRetry(
+            buildRequest = {
+                requestBuilder(config, endpoint)
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build()
+            },
+            operationName = "获取模型列表",
         )
         if (response.statusCode() !in 200..299) {
-            val errorBody = response.body().use { it.readBytes().toString(StandardCharsets.UTF_8) }
+            val errorBody = response.body().use(::readBody)
             error("获取模型列表失败：HTTP ${response.statusCode()} ${errorBody.take(800)}")
         }
 
@@ -107,18 +113,20 @@ class OpenAICompatibleClient(
             ),
         )
 
-        val response = httpClient.send(
-            requestBuilder(config, endpoint)
-                .timeout(Duration.ofSeconds(30))
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                .build(),
-            HttpResponse.BodyHandlers.ofInputStream(),
+        val response = sendWithRetry(
+            buildRequest = {
+                requestBuilder(config, endpoint)
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build()
+            },
+            operationName = "探测工具调用能力",
         )
 
         return response.body().use { stream ->
-            val responseBody = stream.readBytes().toString(StandardCharsets.UTF_8)
+            val responseBody = readBody(stream)
             when (response.statusCode()) {
                 in 200..299 -> ToolCapability(
                     supportsToolCalling = true,
@@ -154,17 +162,19 @@ class OpenAICompatibleClient(
             },
         )
 
-        val response = httpClient.send(
-            requestBuilder(request.providerConfig, endpoint)
-                .timeout(Duration.ofMinutes(5))
-                .header("Content-Type", "application/json")
-                .header("Accept", "text/event-stream, application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                .build(),
-            HttpResponse.BodyHandlers.ofInputStream(),
+        val response = sendWithRetry(
+            buildRequest = {
+                requestBuilder(request.providerConfig, endpoint)
+                    .timeout(Duration.ofMinutes(5))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream, application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build()
+            },
+            operationName = "发起聊天请求",
         )
         if (response.statusCode() !in 200..299) {
-            val errorBody = response.body().use { it.readBytes().toString(StandardCharsets.UTF_8) }
+            val errorBody = response.body().use(::readBody)
             error("OpenAI-compatible 请求失败：HTTP ${response.statusCode()} ${errorBody.take(800)}")
         }
 
@@ -245,6 +255,56 @@ class OpenAICompatibleClient(
             }
             return ChatResult(content, parseToolCalls(message.path("tool_calls")))
         }
+    }
+
+    private fun sendWithRetry(
+        buildRequest: () -> HttpRequest,
+        operationName: String,
+    ): HttpResponse<InputStream> {
+        var lastException: Exception? = null
+        for (attempt in 0..MAX_RETRIES) {
+            try {
+                val response = httpClient.send(
+                    buildRequest(),
+                    HttpResponse.BodyHandlers.ofInputStream(),
+                )
+                if (!isRetryableStatus(response.statusCode()) || attempt == MAX_RETRIES) {
+                    return response
+                }
+                response.body().close()
+                sleepBeforeRetry(attempt, operationName, "HTTP ${response.statusCode()}")
+            } catch (exception: InterruptedException) {
+                Thread.currentThread().interrupt()
+                error("$operationName 被中断。")
+            } catch (exception: IOException) {
+                lastException = exception
+                if (attempt == MAX_RETRIES) break
+                sleepBeforeRetry(attempt, operationName, exception.message ?: exception.javaClass.simpleName)
+            }
+        }
+        error("$operationName 失败：${lastException?.message ?: "请求未成功完成"}")
+    }
+
+    private fun sleepBeforeRetry(attempt: Int, operationName: String, reason: String) {
+        val delayMs = retryDelayMillis(attempt)
+        runCatching { sleeper(delayMs) }.getOrElse { exception ->
+            if (exception is InterruptedException) {
+                Thread.currentThread().interrupt()
+                error("$operationName 被中断。")
+            }
+            throw exception
+        }
+    }
+
+    private fun retryDelayMillis(attempt: Int): Long {
+        val scaled = INITIAL_RETRY_DELAY_MS * (1L shl attempt.coerceAtMost(4))
+        return min(scaled, 2_500L)
+    }
+
+    private fun isRetryableStatus(statusCode: Int): Boolean = statusCode in RETRYABLE_STATUS_CODES
+
+    private fun readBody(stream: InputStream): String {
+        return stream.readBytes().toString(StandardCharsets.UTF_8)
     }
 
     private fun serializeMessage(message: ConversationMessage): Map<String, Any?> {
