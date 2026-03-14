@@ -35,6 +35,11 @@ class OpenAICompatibleClient(
         val toolCalls: List<ToolCall>,
     )
 
+    data class CapabilityProbeResult(
+        val capability: ToolCapability,
+        val models: List<String> = emptyList(),
+    )
+
     fun testConnection(config: ProviderConfig): ConnectionCheckResult {
         val models = listModels(config)
         val message = if (models.isEmpty()) {
@@ -69,6 +74,66 @@ class OpenAICompatibleClient(
                     ?.asText()
                     ?.takeIf(String::isNotBlank)
             }.distinct().sorted()
+        }
+    }
+
+    fun detectToolCapability(config: ProviderConfig): ToolCapability {
+        val endpoint = URI.create("${config.baseUrl}/chat/completions")
+        val body = mapper.writeValueAsString(
+            mapOf(
+                "model" to config.model,
+                "stream" to false,
+                "messages" to listOf(
+                    mapOf(
+                        "role" to "user",
+                        "content" to "Tool capability probe. Reply briefly.",
+                    ),
+                ),
+                "tools" to listOf(
+                    mapOf(
+                        "type" to "function",
+                        "function" to mapOf(
+                            "name" to "capability_probe",
+                            "description" to "Simple capability probe",
+                            "parameters" to mapOf(
+                                "type" to "object",
+                                "properties" to emptyMap<String, Any>(),
+                            ),
+                        ),
+                    ),
+                ),
+                "tool_choice" to "auto",
+                "max_tokens" to 1,
+            ),
+        )
+
+        val response = httpClient.send(
+            requestBuilder(config, endpoint)
+                .timeout(Duration.ofSeconds(30))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                .build(),
+            HttpResponse.BodyHandlers.ofInputStream(),
+        )
+
+        return response.body().use { stream ->
+            val responseBody = stream.readBytes().toString(StandardCharsets.UTF_8)
+            when (response.statusCode()) {
+                in 200..299 -> ToolCapability(
+                    supportsToolCalling = true,
+                    detail = "模型通过了工具调用探测。",
+                )
+
+                400, 404, 405, 422 -> ToolCapability(
+                    supportsToolCalling = false,
+                    detail = summarizeProbeFailure(response.statusCode(), responseBody),
+                )
+
+                else -> error(
+                    "工具能力探测失败：HTTP ${response.statusCode()} ${responseBody.take(800)}",
+                )
+            }
         }
     }
 
@@ -244,6 +309,14 @@ class OpenAICompatibleClient(
             val arguments = tool.path("function").path("arguments").asText("")
             if (id.isBlank() || name.isBlank()) null else ToolCall(id, name, arguments)
         }
+    }
+
+    private fun summarizeProbeFailure(statusCode: Int, responseBody: String): String {
+        val compact = responseBody
+            .replace(Regex("\\s+"), " ")
+            .take(240)
+            .ifBlank { "服务端拒绝了工具调用探测请求。" }
+        return "HTTP $statusCode: $compact"
     }
 
     private class ToolCallBuilder {

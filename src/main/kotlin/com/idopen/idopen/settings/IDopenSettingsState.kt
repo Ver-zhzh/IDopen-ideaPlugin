@@ -1,5 +1,6 @@
 package com.idopen.idopen.settings
 
+import com.idopen.idopen.agent.ToolCallingMode
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
@@ -18,6 +19,7 @@ class IDopenSettingsState : PersistentStateComponent<IDopenSettingsState> {
     var headersText: String = ""
     var shellPath: String = defaultShellPath()
     var commandTimeoutSeconds: Int = 120
+    var toolCallingMode: String = ToolCallingMode.AUTO.name
     var enableToolCalling: Boolean = false
 
     override fun getState(): IDopenSettingsState = this

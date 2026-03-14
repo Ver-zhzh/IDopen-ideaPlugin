@@ -77,13 +77,26 @@ class IntelliJAgentTools(
         ),
         ToolDefinition(
             id = "apply_patch_preview",
-            description = "Preview and apply a file change. newContent must contain the full updated file contents.",
+            description = "Preview and apply a file change. Use edits for focused changes or newContent for full rewrites.",
             inputSchema = mapOf(
                 "type" to "object",
-                "required" to listOf("filePath", "newContent"),
+                "required" to listOf("filePath"),
                 "properties" to mapOf(
                     "filePath" to mapOf("type" to "string"),
                     "newContent" to mapOf("type" to "string"),
+                    "edits" to mapOf(
+                        "type" to "array",
+                        "items" to mapOf(
+                            "type" to "object",
+                            "properties" to mapOf(
+                                "search" to mapOf("type" to "string"),
+                                "replace" to mapOf("type" to "string"),
+                                "startLine" to mapOf("type" to "integer", "minimum" to 1),
+                                "endLine" to mapOf("type" to "integer", "minimum" to 0),
+                                "newText" to mapOf("type" to "string"),
+                            ),
+                        ),
+                    ),
                     "explanation" to mapOf("type" to "string"),
                 ),
             ),
@@ -118,7 +131,8 @@ class IntelliJAgentTools(
             "get_current_selection" -> getCurrentSelection()
             "apply_patch_preview" -> applyPatchPreview(
                 filePath = args.path("filePath").asText(""),
-                newContent = args.path("newContent").asText(""),
+                newContent = args.optionalText("newContent"),
+                edits = args.path("edits").takeIf { it.isArray }?.let(::parsePatchEdits).orEmpty(),
                 explanation = args.path("explanation").asText(""),
             )
             "run_command" -> runCommand(
@@ -303,10 +317,23 @@ class IntelliJAgentTools(
         )
     }
 
-    private fun applyPatchPreview(filePath: String, newContent: String, explanation: String): ToolExecutionResult {
+    private fun applyPatchPreview(
+        filePath: String,
+        newContent: String?,
+        edits: List<PatchEdit>,
+        explanation: String,
+    ): ToolExecutionResult {
         if (filePath.isBlank()) return ToolExecutionResult("缺少 filePath 参数。", success = false)
         val resolved = resolveProjectPath(filePath) ?: return ToolExecutionResult("路径超出了当前项目范围。", success = false)
         val beforeText = if (Files.exists(resolved)) Files.readString(resolved, StandardCharsets.UTF_8) else ""
+        val afterText = runCatching {
+            when {
+                !newContent.isNullOrBlank() -> newContent
+                edits.isNotEmpty() -> PatchEditSupport.apply(beforeText, edits)
+                else -> error("必须提供 newContent 或 edits。")
+            }
+        }.getOrElse { return ToolExecutionResult("补丁生成失败：${it.message}", success = false) }
+
         val request = ApprovalRequest(
             id = "approval-${System.nanoTime()}",
             type = ApprovalRequest.Type.PATCH,
@@ -314,13 +341,19 @@ class IntelliJAgentTools(
             payload = ApprovalPayload.Patch(
                 filePath = filePath,
                 beforeText = beforeText,
-                afterText = newContent,
-                explanation = explanation.ifBlank { "未提供修改说明。" },
+                afterText = afterText,
+                explanation = explanation.ifBlank {
+                    if (edits.isNotEmpty()) {
+                        "使用 ${edits.size} 个局部编辑生成补丁。"
+                    } else {
+                        "未提供修改说明。"
+                    }
+                },
             ),
         )
         val approved = approvalRequester(request).get()
         if (!approved) return ToolExecutionResult("用户拒绝了这次文件修改。", success = false)
-        applyFileContent(resolved, newContent)
+        applyFileContent(resolved, afterText)
         return ToolExecutionResult("已将修改应用到 $filePath")
     }
 
@@ -475,5 +508,17 @@ class IntelliJAgentTools(
     private fun com.fasterxml.jackson.databind.JsonNode.optionalInt(field: String): Int? {
         val child = path(field)
         return if (child.isMissingNode || child.isNull) null else child.asInt()
+    }
+
+    private fun parsePatchEdits(node: com.fasterxml.jackson.databind.JsonNode): List<PatchEdit> {
+        return node.map { item ->
+            PatchEdit(
+                search = item.optionalText("search"),
+                replace = item.optionalText("replace"),
+                startLine = item.optionalInt("startLine"),
+                endLine = item.optionalInt("endLine"),
+                newText = item.optionalText("newText"),
+            )
+        }
     }
 }

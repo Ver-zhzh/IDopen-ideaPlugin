@@ -3,13 +3,13 @@ package com.idopen.idopen.settings
 import com.idopen.idopen.agent.OpenAICompatibleClient
 import com.idopen.idopen.agent.ProviderConfig
 import com.idopen.idopen.agent.ProviderConfigSupport
+import com.idopen.idopen.agent.ToolCallingMode
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.CollectionComboBoxModel
-import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBScrollPane
@@ -35,9 +35,15 @@ class IDopenSettingsConfigurable : Configurable {
     private val apiKeyField = JBPasswordField()
     private val modelOptions = mutableListOf<String>()
     private val modelField = JComboBox<String>(CollectionComboBoxModel(modelOptions))
+    private val toolCallingModeField = JComboBox(
+        arrayOf(
+            "自动（推荐）",
+            "强制开启",
+            "强制关闭",
+        ),
+    )
     private val shellPathField = TextFieldWithBrowseButton()
     private val timeoutField = JSpinner(SpinnerNumberModel(120, 5, 3600, 5))
-    private val enableToolsCheckBox = JBCheckBox("启用工具调用（部分模型不支持；若聊天报 404，请关闭）")
     private val headersArea = JBTextArea()
     private var panel: JPanel? = null
 
@@ -51,6 +57,8 @@ class IDopenSettingsConfigurable : Configurable {
 
         modelField.isEditable = true
         modelField.preferredSize = Dimension(260, 32)
+
+        toolCallingModeField.toolTipText = "自动模式会先探测当前模型是否支持 tools/function calling。"
 
         shellPathField.addBrowseFolderListener(
             "选择 Shell",
@@ -90,10 +98,10 @@ class IDopenSettingsConfigurable : Configurable {
             if (shellPathField.text.isBlank()) {
                 shellPathField.text = IDopenSettingsState.defaultShellPath()
             }
-            enableToolsCheckBox.isSelected = false
+            toolCallingModeField.selectedItem = "自动（推荐）"
             Messages.showInfoMessage(
                 panel,
-                "已应用 NVIDIA NIM 预设。默认关闭工具调用，兼容性更稳；确认模型支持后再开启。",
+                "已应用 NVIDIA NIM 预设，工具调用模式已切到自动探测。",
                 "IDopen",
             )
         }
@@ -144,17 +152,14 @@ class IDopenSettingsConfigurable : Configurable {
             headersArea.text = ""
         }
 
-        enableToolsCheckBox.toolTipText =
-            "开启后会向模型发送 tools/tool_choice。部分 NVIDIA NIM 模型不支持 function calling，出现 404 时请关闭。"
-
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent("Provider：", providerTypeField)
             .addLabeledComponent("接口地址：", baseUrlField)
             .addLabeledComponent("API Key：", apiKeyField)
             .addLabeledComponent("默认模型：", modelField)
+            .addLabeledComponent("工具调用模式：", toolCallingModeField)
             .addLabeledComponent("Shell 可执行文件：", shellPathField)
             .addLabeledComponent("命令超时（秒）：", timeoutField)
-            .addComponent(enableToolsCheckBox)
             .addComponent(actionPanel)
             .addComponent(headerPanel)
             .addComponentFillVertically(JPanel(), 0)
@@ -168,23 +173,25 @@ class IDopenSettingsConfigurable : Configurable {
         return baseUrlField.text.trim() != settings.baseUrl ||
             String(apiKeyField.password) != settings.apiKey ||
             selectedModel() != settings.defaultModel ||
+            selectedToolCallingMode() != ToolCallingMode.fromStored(settings.toolCallingMode) ||
             shellPathField.text.trim() != settings.shellPath ||
             (timeoutField.value as Int) != settings.commandTimeoutSeconds ||
             headersArea.text.trim() != settings.headersText.trim() ||
-            enableToolsCheckBox.isSelected != settings.enableToolCalling ||
             modelOptions != settings.knownModels
     }
 
     override fun apply() {
+        val mode = selectedToolCallingMode()
         settings.providerType = "OPENAI_COMPATIBLE"
         settings.baseUrl = baseUrlField.text.trim()
         settings.apiKey = String(apiKeyField.password)
         settings.defaultModel = selectedModel()
         settings.knownModels = modelOptions.toMutableList()
+        settings.toolCallingMode = mode.name
+        settings.enableToolCalling = mode == ToolCallingMode.ENABLED
         settings.shellPath = shellPathField.text.trim().ifBlank { IDopenSettingsState.defaultShellPath() }
         settings.commandTimeoutSeconds = timeoutField.value as Int
         settings.headersText = headersArea.text.trim()
-        settings.enableToolCalling = enableToolsCheckBox.isSelected
     }
 
     override fun reset() {
@@ -193,10 +200,14 @@ class IDopenSettingsConfigurable : Configurable {
         apiKeyField.text = settings.apiKey
         replaceModelOptions(settings.knownModels)
         setSelectedModel(settings.defaultModel)
+        toolCallingModeField.selectedItem = when (ToolCallingMode.fromStored(settings.toolCallingMode)) {
+            ToolCallingMode.AUTO -> "自动（推荐）"
+            ToolCallingMode.ENABLED -> "强制开启"
+            ToolCallingMode.DISABLED -> "强制关闭"
+        }
         shellPathField.text = settings.shellPath.ifBlank { IDopenSettingsState.defaultShellPath() }
         timeoutField.value = settings.commandTimeoutSeconds
         headersArea.text = settings.headersText
-        enableToolsCheckBox.isSelected = settings.enableToolCalling
     }
 
     override fun disposeUIResources() {
@@ -220,6 +231,14 @@ class IDopenSettingsConfigurable : Configurable {
     private fun selectedModel(): String {
         val editorItem = modelField.editor.item?.toString()?.trim().orEmpty()
         return editorItem.ifBlank { modelField.selectedItem?.toString()?.trim().orEmpty() }
+    }
+
+    private fun selectedToolCallingMode(): ToolCallingMode {
+        return when (toolCallingModeField.selectedItem?.toString()) {
+            "强制开启" -> ToolCallingMode.ENABLED
+            "强制关闭" -> ToolCallingMode.DISABLED
+            else -> ToolCallingMode.AUTO
+        }
     }
 
     private fun setSelectedModel(model: String) {

@@ -4,6 +4,7 @@ import com.idopen.idopen.agent.AgentSessionService
 import com.idopen.idopen.agent.ApprovalPayload
 import com.idopen.idopen.agent.ApprovalRequest
 import com.idopen.idopen.agent.AttachmentContext
+import com.idopen.idopen.agent.ChatSessionSummary
 import com.idopen.idopen.agent.SessionEvent
 import com.idopen.idopen.agent.SessionListener
 import com.idopen.idopen.agent.TranscriptEntry
@@ -46,8 +47,12 @@ import javax.swing.AbstractAction
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
+import javax.swing.DefaultComboBoxModel
+import javax.swing.DefaultListCellRenderer
 import javax.swing.JButton
 import javax.swing.JComponent
+import javax.swing.JComboBox
+import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
@@ -59,6 +64,8 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val service = project.getService(AgentSessionService::class.java)
     private val transcriptPanel = JPanel()
     private val transcriptScrollPane = JBScrollPane(transcriptPanel)
+    private val sessionSelector = JComboBox<ChatSessionSummary>()
+    private val newSessionButton = JButton("+")
     private val inputArea = PromptTextArea(
         "输入你的需求，例如：解释当前类、修复这个错误、搜索某个调用链，或生成修改方案...",
         5,
@@ -75,6 +82,8 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val collapsibleBodies = linkedMapOf<String, JComponent>()
     private val emptyState = createEmptyState()
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+    private var currentSessionId: String = service.getCurrentSessionId()
+    private var updatingSessionSelector = false
     @Suppress("unused")
     private val subscription = service.subscribe(SessionListener(::handleEvent))
 
@@ -96,6 +105,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         inputArea.foreground = JBColor.foreground()
         (inputArea.caret as? DefaultCaret)?.updatePolicy = DefaultCaret.ALWAYS_UPDATE
         registerSendShortcut()
+        configureSessionSelector()
 
         val root = JBPanel<JBPanel<*>>(BorderLayout())
         root.background = Palette.CANVAS
@@ -106,8 +116,59 @@ class IDopenToolWindowPanel(private val project: Project) {
         component.setContent(root)
         refreshHeader()
         updateStatus("空闲")
-        transcriptPanel.add(emptyState)
-        service.getTranscript().forEach(::renderEntry)
+        refreshSessionSelector(service.getSessions(), service.getCurrentSessionId())
+        renderCurrentTranscript()
+    }
+
+    private fun configureSessionSelector() {
+        sessionSelector.preferredSize = Dimension(180, 28)
+        sessionSelector.renderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean,
+            ): Component {
+                val component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                text = (value as? ChatSessionSummary)?.title ?: "新对话"
+                return component
+            }
+        }
+        sessionSelector.addActionListener {
+            if (updatingSessionSelector) return@addActionListener
+            val summary = sessionSelector.selectedItem as? ChatSessionSummary ?: return@addActionListener
+            service.selectSession(summary.id)
+        }
+        newSessionButton.margin = JBInsets(2, 8, 2, 8)
+        newSessionButton.toolTipText = "新建会话"
+        newSessionButton.addActionListener {
+            service.createSession()
+        }
+    }
+
+    private fun refreshSessionSelector(summaries: List<ChatSessionSummary>, activeSessionId: String) {
+        updatingSessionSelector = true
+        sessionSelector.model = DefaultComboBoxModel(summaries.toTypedArray())
+        sessionSelector.selectedItem = summaries.firstOrNull { it.id == activeSessionId }
+        sessionSelector.isEnabled = !service.isRunning()
+        newSessionButton.isEnabled = !service.isRunning()
+        updatingSessionSelector = false
+    }
+
+    private fun renderCurrentTranscript() {
+        messageAreas.clear()
+        collapsibleBodies.clear()
+        transcriptPanel.removeAll()
+        val transcript = service.getTranscript()
+        if (transcript.isEmpty()) {
+            transcriptPanel.add(emptyState)
+        } else {
+            transcript.forEach(::renderEntry)
+        }
+        transcriptPanel.revalidate()
+        transcriptPanel.repaint()
+        scrollToBottom()
     }
 
     private fun createStatusBar(): JComponent {
@@ -117,6 +178,8 @@ class IDopenToolWindowPanel(private val project: Project) {
         val topRow = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         topRow.isOpaque = false
         topRow.add(title)
+        topRow.add(sessionSelector)
+        topRow.add(newSessionButton)
         topRow.add(statusBadge)
 
         val chipsRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
@@ -279,6 +342,13 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun handleEvent(event: SessionEvent) {
         SwingUtilities.invokeLater {
             when (event) {
+                is SessionEvent.SessionsChanged -> {
+                    refreshSessionSelector(event.summaries, event.activeSessionId)
+                    if (event.activeSessionId != currentSessionId) {
+                        currentSessionId = event.activeSessionId
+                        renderCurrentTranscript()
+                    }
+                }
                 is SessionEvent.EntryAdded -> renderEntry(event.entry)
                 is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.text = event.snapshot
                 is SessionEvent.RunStateChanged -> {
@@ -471,7 +541,8 @@ class IDopenToolWindowPanel(private val project: Project) {
         timeLabel.foreground = JBColor.GRAY
         right.add(timeLabel)
 
-        val body = JBTextArea(text)
+        val pagination = if (codeBlock) PaginationState.create(text) else null
+        val body = JBTextArea(pagination?.currentPageText() ?: text)
         body.isEditable = false
         body.lineWrap = !codeBlock
         body.wrapStyleWord = true
@@ -491,11 +562,37 @@ class IDopenToolWindowPanel(private val project: Project) {
         val contentComponent: JComponent = if (codeBlock) {
             val codePanel = JPanel(BorderLayout(0, 6))
             codePanel.isOpaque = false
-            val codeActions = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0))
+            val codeActions = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
             codeActions.isOpaque = false
+            pagination?.let { state ->
+                val pageLabel = JBLabel(state.pageLabel())
+                pageLabel.foreground = JBColor.GRAY
+                val prevButton = JButton("上一页")
+                val nextButton = JButton("下一页")
+                prevButton.margin = JBInsets(2, 8, 2, 8)
+                nextButton.margin = JBInsets(2, 8, 2, 8)
+                val refreshPage = {
+                    body.text = state.currentPageText()
+                    pageLabel.text = state.pageLabel()
+                    prevButton.isEnabled = state.hasPrevious()
+                    nextButton.isEnabled = state.hasNext()
+                }
+                prevButton.addActionListener {
+                    state.previous()
+                    refreshPage()
+                }
+                nextButton.addActionListener {
+                    state.next()
+                    refreshPage()
+                }
+                refreshPage()
+                codeActions.add(pageLabel)
+                codeActions.add(prevButton)
+                codeActions.add(nextButton)
+            }
             val copyButton = JButton("复制")
             copyButton.margin = JBInsets(2, 8, 2, 8)
-            copyButton.addActionListener { copyToClipboard(body.text) }
+            copyButton.addActionListener { copyToClipboard(text) }
             codeActions.add(copyButton)
             codePanel.add(codeActions, BorderLayout.NORTH)
             codePanel.add(body, BorderLayout.CENTER)
@@ -838,6 +935,39 @@ class IDopenToolWindowPanel(private val project: Project) {
         label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 1f)
         label.foreground = color
         return label
+    }
+
+    private class PaginationState private constructor(
+        private val pages: List<String>,
+    ) {
+        private var index = 0
+
+        fun currentPageText(): String = pages[index]
+
+        fun pageLabel(): String = "${index + 1}/${pages.size}"
+
+        fun hasPrevious(): Boolean = index > 0
+
+        fun hasNext(): Boolean = index < pages.lastIndex
+
+        fun previous() {
+            if (hasPrevious()) index -= 1
+        }
+
+        fun next() {
+            if (hasNext()) index += 1
+        }
+
+        companion object {
+            private const val PAGE_LINES = 80
+
+            fun create(text: String): PaginationState? {
+                val lines = text.lines()
+                if (lines.size <= PAGE_LINES) return null
+                val pages = lines.chunked(PAGE_LINES).map { it.joinToString("\n") }
+                return PaginationState(pages)
+            }
+        }
     }
 
     private class PromptTextArea(

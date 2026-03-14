@@ -7,6 +7,19 @@ enum class ProviderType {
     OPENAI_COMPATIBLE,
 }
 
+enum class ToolCallingMode {
+    AUTO,
+    ENABLED,
+    DISABLED,
+    ;
+
+    companion object {
+        fun fromStored(value: String?): ToolCallingMode {
+            return entries.firstOrNull { it.name == value } ?: AUTO
+        }
+    }
+}
+
 enum class AttachmentKind {
     CURRENT_FILE,
     CURRENT_SELECTION,
@@ -36,6 +49,28 @@ data class ToolCall(
     val id: String,
     val name: String,
     val argumentsJson: String,
+)
+
+data class ToolCapability(
+    val supportsToolCalling: Boolean,
+    val checkedAt: Instant = Instant.now(),
+    val detail: String? = null,
+)
+
+data class ChatSessionSummary(
+    val id: String,
+    val title: String,
+    val updatedAt: Instant,
+    val entryCount: Int,
+    val running: Boolean,
+)
+
+data class PatchEdit(
+    val search: String? = null,
+    val replace: String? = null,
+    val startLine: Int? = null,
+    val endLine: Int? = null,
+    val newText: String? = null,
 )
 
 sealed interface ConversationMessage {
@@ -142,6 +177,11 @@ sealed interface TranscriptEntry {
 }
 
 sealed interface SessionEvent {
+    data class SessionsChanged(
+        val summaries: List<ChatSessionSummary>,
+        val activeSessionId: String,
+    ) : SessionEvent
+
     data class EntryAdded(val entry: TranscriptEntry) : SessionEvent
     data class MessageDelta(
         val messageId: String,
