@@ -194,9 +194,10 @@ class IDopenToolWindowPanel(private val project: Project) {
         val title = JBLabel("IDopen")
         title.font = title.font.deriveFont(Font.BOLD, title.font.size2D + 1f)
 
-        val topRow = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
-        topRow.isOpaque = false
-        topRow.add(title)
+        val titleRow = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
+        titleRow.isOpaque = false
+        titleRow.add(title)
+        titleRow.add(statusBadge)
         val sessionWrap = JPanel(BorderLayout(6, 0))
         sessionWrap.background = Palette.HEADER_FIELD_BG
         sessionWrap.border = BorderFactory.createCompoundBorder(
@@ -205,19 +206,18 @@ class IDopenToolWindowPanel(private val project: Project) {
         )
         sessionWrap.add(sessionSelector, BorderLayout.CENTER)
         sessionWrap.add(newSessionButton, BorderLayout.EAST)
-        topRow.add(sessionWrap)
-        topRow.add(statusBadge)
+        val left = JPanel()
+        left.layout = BoxLayout(left, BoxLayout.Y_AXIS)
+        left.isOpaque = false
+        left.add(titleRow)
+        left.add(Box.createRigidArea(Dimension(0, 6)))
+        left.add(sessionWrap)
 
         val chipsRow = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         chipsRow.isOpaque = false
         chipsRow.add(providerBadge)
         chipsRow.add(endpointBadge)
         chipsRow.add(modelBadge)
-
-        val summary = JPanel(BorderLayout())
-        summary.isOpaque = false
-        summary.add(topRow, BorderLayout.WEST)
-        summary.add(chipsRow, BorderLayout.EAST)
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
         right.isOpaque = false
@@ -232,6 +232,15 @@ class IDopenToolWindowPanel(private val project: Project) {
         right.add(trustModeCheckBox)
         right.add(unlimitedUsageCheckBox)
         right.add(settingsButton)
+
+        val rightGroup = JPanel()
+        rightGroup.layout = BoxLayout(rightGroup, BoxLayout.Y_AXIS)
+        rightGroup.isOpaque = false
+        chipsRow.alignmentX = Component.RIGHT_ALIGNMENT
+        right.alignmentX = Component.RIGHT_ALIGNMENT
+        rightGroup.add(chipsRow)
+        rightGroup.add(Box.createRigidArea(Dimension(0, 6)))
+        rightGroup.add(right)
 
         trustModeCheckBox.addActionListener {
             IDopenSettingsState.getInstance().trustMode = trustModeCheckBox.isSelected
@@ -250,8 +259,8 @@ class IDopenToolWindowPanel(private val project: Project) {
             BorderFactory.createMatteBorder(0, 0, 1, 0, Palette.BORDER),
             BorderFactory.createEmptyBorder(10, 12, 10, 12),
         )
-        bar.add(summary, BorderLayout.CENTER)
-        bar.add(right, BorderLayout.EAST)
+        bar.add(left, BorderLayout.WEST)
+        bar.add(rightGroup, BorderLayout.EAST)
         return bar
     }
 
