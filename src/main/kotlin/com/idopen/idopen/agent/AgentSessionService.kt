@@ -133,6 +133,8 @@ class AgentSessionService(private val project: Project) {
 
     fun getTranscript(): List<TranscriptEntry> = currentSession().transcript.toList()
 
+    fun getStepGroups(): List<SessionStepGroup> = SessionStepSupport.group(currentSession().transcript)
+
     fun getSessions(): List<ChatSessionSummary> {
         return sessions.values.map { session ->
             ChatSessionSummary(
@@ -273,14 +275,19 @@ class AgentSessionService(private val project: Project) {
                     callId = toolCall.id,
                     toolName = toolCall.name,
                     argumentsJson = toolCall.argumentsJson,
-                    state = ToolInvocationState.RUNNING,
+                    state = ToolInvocationState.PENDING,
+                    title = "等待执行",
                     roundId = roundId,
                 )
                 appendEntry(session, toolEntry)
                 emit(SessionEvent.EntryAdded(toolEntry))
                 emit(SessionEvent.ToolRequested(toolCall.id, toolCall.name, toolCall.argumentsJson))
 
-                val output = runCatching { tools.execute(toolCall) }
+                val output = runCatching {
+                    tools.execute(toolCall) { update ->
+                        applyToolProgress(session, toolEntry, update)
+                    }
+                }
                     .getOrElse { ToolExecutionResult("工具执行失败：${it.message}", success = false) }
                 if (!output.success) {
                     stepSucceeded = false
@@ -291,6 +298,10 @@ class AgentSessionService(private val project: Project) {
                 } else {
                     ToolInvocationState.ERROR
                 }
+                if (toolEntry.startedAt == null) {
+                    toolEntry.startedAt = toolEntry.createdAt
+                }
+                toolEntry.finishedAt = Instant.now()
                 toolEntry.output = output.content
                 toolEntry.success = output.success
                 session.history += ConversationMessage.Tool(
@@ -417,6 +428,27 @@ class AgentSessionService(private val project: Project) {
         session.updatedAt = Instant.now()
         persistSessions()
         emit(SessionEvent.EntryUpdated(entry))
+    }
+
+    private fun applyToolProgress(
+        session: SessionState,
+        entry: TranscriptEntry.ToolInvocation,
+        update: ToolProgressUpdate,
+    ) {
+        entry.state = update.state
+        if (!update.title.isNullOrBlank()) {
+            entry.title = update.title
+        }
+        if (update.metadata.isNotEmpty()) {
+            entry.metadata = update.metadata
+        }
+        if (update.state == ToolInvocationState.RUNNING && entry.startedAt == null) {
+            entry.startedAt = Instant.now()
+        }
+        if (update.state == ToolInvocationState.COMPLETED || update.state == ToolInvocationState.ERROR) {
+            entry.finishedAt = Instant.now()
+        }
+        emitEntryUpdated(session, entry)
     }
 
     private fun emitStepFinish(

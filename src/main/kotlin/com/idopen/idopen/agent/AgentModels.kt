@@ -51,6 +51,12 @@ data class ToolCall(
     val argumentsJson: String,
 )
 
+data class ToolProgressUpdate(
+    val state: ToolInvocationState,
+    val title: String? = null,
+    val metadata: Map<String, String> = emptyMap(),
+)
+
 data class ToolCapability(
     val supportsToolCalling: Boolean,
     val checkedAt: Instant = Instant.now(),
@@ -168,7 +174,11 @@ sealed interface TranscriptEntry {
         val callId: String,
         val toolName: String,
         val argumentsJson: String,
-        var state: ToolInvocationState = ToolInvocationState.RUNNING,
+        var state: ToolInvocationState = ToolInvocationState.PENDING,
+        var title: String? = null,
+        var metadata: Map<String, String> = emptyMap(),
+        var startedAt: Instant? = null,
+        var finishedAt: Instant? = null,
         var output: String? = null,
         var success: Boolean? = null,
         val createdAt: Instant = Instant.now(),
@@ -264,6 +274,10 @@ data class ToolExecutionResult(
     val content: String,
     val success: Boolean = true,
 )
+
+fun interface ToolExecutionObserver {
+    fun onUpdate(update: ToolProgressUpdate)
+}
 
 fun interface SessionListener {
     fun onEvent(event: SessionEvent)

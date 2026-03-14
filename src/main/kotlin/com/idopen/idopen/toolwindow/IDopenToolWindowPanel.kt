@@ -1163,11 +1163,27 @@ class IDopenToolWindowPanel(private val project: Project) {
             com.idopen.idopen.agent.ToolInvocationState.COMPLETED -> "已完成"
             com.idopen.idopen.agent.ToolInvocationState.ERROR -> "失败"
         }
+        val headerSubtitle = entry.title?.takeIf { it.isNotBlank() }?.let { "$subtitle · $it" } ?: subtitle
         val accent = when (entry.state) {
             com.idopen.idopen.agent.ToolInvocationState.ERROR -> Palette.ERROR_ACCENT
             else -> Palette.TOOL_ACCENT
         }
         val details = buildString {
+            entry.title?.takeIf { it.isNotBlank() }?.let { title ->
+                append("阶段")
+                append("\n")
+                append(title)
+                append("\n\n")
+            }
+            if (entry.metadata.isNotEmpty()) {
+                append("元数据")
+                append("\n")
+                entry.metadata.entries.sortedBy { it.key }.forEach { (key, value) ->
+                    append("$key: $value")
+                    append("\n")
+                }
+                append("\n")
+            }
             append("参数")
             append("\n")
             append(entry.argumentsJson)
@@ -1182,7 +1198,7 @@ class IDopenToolWindowPanel(private val project: Project) {
             id = entry.id,
             stage = "工具",
             title = entry.toolName,
-            subtitle = subtitle,
+            subtitle = headerSubtitle,
             text = details,
             createdAt = entry.createdAt,
             accent = accent,

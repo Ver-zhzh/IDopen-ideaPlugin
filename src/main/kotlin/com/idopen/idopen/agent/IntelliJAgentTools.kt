@@ -115,35 +115,52 @@ class IntelliJAgentTools(
         ),
     )
 
-    fun execute(call: ToolCall): ToolExecutionResult {
+    fun execute(
+        call: ToolCall,
+        observer: ToolExecutionObserver = ToolExecutionObserver {},
+    ): ToolExecutionResult {
         val args = mapper.readTree(call.argumentsJson)
         return when (call.name) {
-            "read_project_tree" -> readProjectTree(args.path("maxDepth").asInt(4), args.path("maxEntries").asInt(200))
+            "read_project_tree" -> readProjectTree(args.path("maxDepth").asInt(4), args.path("maxEntries").asInt(200), observer)
             "read_file" -> readFile(
                 path = args.path("path").asText(""),
                 offset = args.optionalInt("offset"),
                 limit = args.optionalInt("limit"),
                 startLine = args.optionalInt("startLine"),
                 endLine = args.optionalInt("endLine"),
+                observer = observer,
             )
-            "search_text" -> searchText(args.path("query").asText(""), args.path("maxResults").asInt(20))
-            "get_current_file" -> getCurrentFile()
-            "get_current_selection" -> getCurrentSelection()
+            "search_text" -> searchText(args.path("query").asText(""), args.path("maxResults").asInt(20), observer)
+            "get_current_file" -> getCurrentFile(observer)
+            "get_current_selection" -> getCurrentSelection(observer)
             "apply_patch_preview" -> applyPatchPreview(
                 filePath = args.path("filePath").asText(""),
                 newContent = args.optionalText("newContent"),
                 edits = args.path("edits").takeIf { it.isArray }?.let(::parsePatchEdits).orEmpty(),
                 explanation = args.path("explanation").asText(""),
+                observer = observer,
             )
             "run_command" -> runCommand(
                 command = args.path("command").asText(""),
                 workingDirectory = args.optionalText("workingDirectory"),
+                observer = observer,
             )
             else -> ToolExecutionResult("未知工具：${call.name}", success = false)
         }
     }
 
-    private fun readProjectTree(maxDepth: Int, maxEntries: Int): ToolExecutionResult {
+    private fun readProjectTree(
+        maxDepth: Int,
+        maxEntries: Int,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "读取项目结构",
+                metadata = mapOf("maxDepth" to maxDepth.toString(), "maxEntries" to maxEntries.toString()),
+            ),
+        )
         val output = StringBuilder()
         var appended = 0
         ReadAction.run<RuntimeException> {
@@ -189,7 +206,15 @@ class IntelliJAgentTools(
         limit: Int?,
         startLine: Int?,
         endLine: Int?,
+        observer: ToolExecutionObserver,
     ): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "读取文件",
+                metadata = mapOf("path" to path),
+            ),
+        )
         if (path.isBlank()) return ToolExecutionResult("缺少 path 参数。", success = false)
         val resolved = resolveProjectPath(path) ?: return ToolExecutionResult("路径超出了当前项目范围。", success = false)
         if (!Files.exists(resolved)) return ToolExecutionResult("文件或目录不存在：$path", success = false)
@@ -262,8 +287,19 @@ class IntelliJAgentTools(
         )
     }
 
-    private fun searchText(query: String, maxResults: Int): ToolExecutionResult {
+    private fun searchText(
+        query: String,
+        maxResults: Int,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
         if (query.isBlank()) return ToolExecutionResult("缺少 query 参数。", success = false)
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "搜索项目文本",
+                metadata = mapOf("query" to query, "maxResults" to maxResults.toString()),
+            ),
+        )
         val results = mutableListOf<String>()
         ReadAction.run<RuntimeException> {
             ProjectFileIndex.getInstance(project).iterateContent { file ->
@@ -284,7 +320,8 @@ class IntelliJAgentTools(
         )
     }
 
-    private fun getCurrentFile(): ToolExecutionResult {
+    private fun getCurrentFile(observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(ToolProgressUpdate(state = ToolInvocationState.RUNNING, title = "读取当前文件"))
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
             ?: return ToolExecutionResult("当前没有激活的编辑器。", success = false)
         val file = FileDocumentManager.getInstance().getFile(editor.document)
@@ -297,9 +334,10 @@ class IntelliJAgentTools(
         return ToolExecutionResult(ReadWindowSupport.formatFile(relativePath(file), slice))
     }
 
-    private fun getCurrentSelection(): ToolExecutionResult {
+    private fun getCurrentSelection(observer: ToolExecutionObserver): ToolExecutionResult {
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
             ?: return ToolExecutionResult("当前没有激活的编辑器。", success = false)
+        observer.onUpdate(ToolProgressUpdate(state = ToolInvocationState.RUNNING, title = "读取当前选区"))
         val selection = editor.selectionModel.selectedText
             ?: return ToolExecutionResult("当前编辑器没有选中文本。", success = false)
         val file = FileDocumentManager.getInstance().getFile(editor.document)
@@ -322,7 +360,15 @@ class IntelliJAgentTools(
         newContent: String?,
         edits: List<PatchEdit>,
         explanation: String,
+        observer: ToolExecutionObserver,
     ): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.PENDING,
+                title = "等待批准补丁",
+                metadata = mapOf("file" to filePath),
+            ),
+        )
         if (filePath.isBlank()) return ToolExecutionResult("缺少 filePath 参数。", success = false)
         val resolved = resolveProjectPath(filePath) ?: return ToolExecutionResult("路径超出了当前项目范围。", success = false)
         val beforeText = if (Files.exists(resolved)) Files.readString(resolved, StandardCharsets.UTF_8) else ""
@@ -353,11 +399,22 @@ class IntelliJAgentTools(
         )
         val approved = approvalRequester(request).get()
         if (!approved) return ToolExecutionResult("用户拒绝了这次文件修改。", success = false)
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "应用补丁",
+                metadata = mapOf("file" to filePath),
+            ),
+        )
         applyFileContent(resolved, afterText)
         return ToolExecutionResult("已将修改应用到 $filePath")
     }
 
-    private fun runCommand(command: String, workingDirectory: String?): ToolExecutionResult {
+    private fun runCommand(
+        command: String,
+        workingDirectory: String?,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
         if (command.isBlank()) return ToolExecutionResult("缺少 command 参数。", success = false)
         val directory = if (workingDirectory.isNullOrBlank()) {
             projectRoot
@@ -372,6 +429,13 @@ class IntelliJAgentTools(
         }
 
         if (decision.policy == CommandPolicy.REQUIRE_APPROVAL) {
+            observer.onUpdate(
+                ToolProgressUpdate(
+                    state = ToolInvocationState.PENDING,
+                    title = "等待批准命令",
+                    metadata = mapOf("command" to command, "workingDirectory" to directory.toString()),
+                ),
+            )
             val request = ApprovalRequest(
                 id = "approval-${System.nanoTime()}",
                 type = ApprovalRequest.Type.COMMAND,
@@ -382,6 +446,13 @@ class IntelliJAgentTools(
             if (!approved) return ToolExecutionResult("用户拒绝了这次命令执行。", success = false)
         }
 
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "执行命令",
+                metadata = mapOf("command" to command, "workingDirectory" to directory.toString()),
+            ),
+        )
         val settings = shellSettings()
         val shell = settings.shellPath.ifBlank { com.idopen.idopen.settings.IDopenSettingsState.defaultShellPath() }
         val shellCommand = if (System.getProperty("os.name").lowercase().contains("win")) {

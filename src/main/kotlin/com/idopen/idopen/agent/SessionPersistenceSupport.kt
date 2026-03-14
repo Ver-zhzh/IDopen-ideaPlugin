@@ -115,6 +115,14 @@ object SessionPersistenceSupport {
                     put("toolName", entry.toolName)
                     put("argumentsJson", entry.argumentsJson)
                     put("state", entry.state.name)
+                    entry.title?.let { put("title", it) }
+                    if (entry.metadata.isNotEmpty()) {
+                        set<ObjectNode>("metadata", mapper.createObjectNode().apply {
+                            entry.metadata.forEach { (key, value) -> put(key, value) }
+                        })
+                    }
+                    entry.startedAt?.let { put("startedAt", it.toEpochMilli()) }
+                    entry.finishedAt?.let { put("finishedAt", it.toEpochMilli()) }
                     entry.output?.let { put("output", it) }
                     entry.success?.let { put("success", it) }
                     put("createdAt", entry.createdAt.toEpochMilli())
@@ -180,7 +188,18 @@ object SessionPersistenceSupport {
                 state = node.path("state").asText()
                     .takeIf { it.isNotBlank() }
                     ?.let(ToolInvocationState::valueOf)
-                    ?: ToolInvocationState.RUNNING,
+                    ?: ToolInvocationState.PENDING,
+                title = node.path("title").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+                metadata = node.path("metadata")
+                    .takeIf { it.isObject }
+                    ?.fields()
+                    ?.asSequence()
+                    ?.associate { it.key to it.value.asText() }
+                    .orEmpty(),
+                startedAt = node.path("startedAt").takeIf { !it.isMissingNode && !it.isNull }?.asLong()
+                    ?.let(Instant::ofEpochMilli),
+                finishedAt = node.path("finishedAt").takeIf { !it.isMissingNode && !it.isNull }?.asLong()
+                    ?.let(Instant::ofEpochMilli),
                 output = node.path("output").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
                 success = node.path("success").takeIf { !it.isMissingNode && !it.isNull }?.asBoolean(),
                 createdAt = createdAt,

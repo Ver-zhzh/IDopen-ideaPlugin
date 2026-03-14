@@ -25,6 +25,10 @@ class SessionPersistenceSupportTest {
                         toolName = "read_file",
                         argumentsJson = """{"path":"README.md"}""",
                         state = ToolInvocationState.COMPLETED,
+                        title = "读取文件",
+                        metadata = mapOf("path" to "README.md"),
+                        startedAt = now,
+                        finishedAt = now.plusSeconds(1),
                         output = "ok",
                         success = true,
                         createdAt = now,
@@ -70,6 +74,10 @@ class SessionPersistenceSupportTest {
         assertEquals("round-1", decoded.sessions.first().transcript[3].roundId)
         val toolInvocation = assertIs<TranscriptEntry.ToolInvocation>(decoded.sessions.first().transcript[4])
         assertEquals(ToolInvocationState.COMPLETED, toolInvocation.state)
+        assertEquals("读取文件", toolInvocation.title)
+        assertEquals("README.md", toolInvocation.metadata["path"])
+        assertEquals(now, toolInvocation.startedAt)
+        assertEquals(now.plusSeconds(1), toolInvocation.finishedAt)
         assertEquals("ok", toolInvocation.output)
         val stepFinish = assertIs<TranscriptEntry.StepFinish>(decoded.sessions.first().transcript[5])
         assertEquals("tool-loop", stepFinish.reason)
