@@ -539,16 +539,29 @@ class IDopenToolWindowPanel(private val project: Project) {
     ) {
         if (messageAreas.containsKey(id)) return
 
-        val card = JPanel(BorderLayout(0, 6))
-        card.maximumSize = Dimension(if (alignRight) 460 else 560, Int.MAX_VALUE)
-        card.background = background
-        card.border = BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(0, 3, 0, 0, accent),
-            BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(Palette.BORDER),
-                BorderFactory.createEmptyBorder(7, 9, 7, 9),
-            ),
-        )
+        val bubbleStyle = alignRight || title == "IDopen"
+        val card = if (bubbleStyle) {
+            BubblePanel(
+                backgroundColor = background,
+                borderColor = if (alignRight) Palette.USER_BUBBLE_BORDER else Palette.ASSISTANT_BUBBLE_BORDER,
+                arc = 18,
+            )
+        } else {
+            JPanel(BorderLayout(0, 6)).apply {
+                this.background = background
+                this.border = BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(0, 3, 0, 0, accent),
+                    BorderFactory.createCompoundBorder(
+                        BorderFactory.createLineBorder(Palette.BORDER),
+                        BorderFactory.createEmptyBorder(7, 9, 7, 9),
+                    ),
+                )
+            }
+        }
+        card.maximumSize = Dimension(if (alignRight) 440 else if (bubbleStyle) 520 else 560, Int.MAX_VALUE)
+        if (bubbleStyle) {
+            card.border = BorderFactory.createEmptyBorder(9, 11, 9, 11)
+        }
 
         val header = JPanel(BorderLayout())
         header.isOpaque = false
@@ -576,7 +589,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         body.isEditable = false
         body.lineWrap = !codeBlock
         body.wrapStyleWord = true
-        body.background = background
+        body.background = if (bubbleStyle) card.background else background
         body.border = BorderFactory.createEmptyBorder()
         body.margin = JBInsets(0, 0, 0, 0)
         if (codeBlock) {
@@ -1145,14 +1158,29 @@ class IDopenToolWindowPanel(private val project: Project) {
     }
 
     private fun createAttachmentChip(text: String): JComponent {
-        val label = JBLabel(text)
-        label.isOpaque = true
-        label.background = Palette.CHIP_BG
-        label.border = BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(Palette.CHIP_BORDER),
-            BorderFactory.createEmptyBorder(3, 8, 3, 8),
+        val chip = BubblePanel(
+            backgroundColor = Palette.CHIP_BG,
+            borderColor = Palette.CHIP_BORDER,
+            arc = 16,
         )
-        return label
+        chip.layout = BoxLayout(chip, BoxLayout.X_AXIS)
+        chip.border = BorderFactory.createEmptyBorder(5, 9, 5, 9)
+
+        val dot = JPanel()
+        dot.isOpaque = true
+        dot.background = Palette.CHIP_DOT
+        dot.preferredSize = Dimension(7, 7)
+        dot.maximumSize = Dimension(7, 7)
+        dot.minimumSize = Dimension(7, 7)
+        dot.border = BorderFactory.createEmptyBorder()
+
+        val label = JBLabel(text)
+        label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 0.3f)
+
+        chip.add(dot)
+        chip.add(Box.createRigidArea(Dimension(7, 0)))
+        chip.add(label)
+        return chip
     }
 
     private fun copyToClipboard(text: String) {
@@ -1251,6 +1279,27 @@ class IDopenToolWindowPanel(private val project: Project) {
         }
     }
 
+    private class BubblePanel(
+        private val backgroundColor: Color,
+        private val borderColor: Color,
+        private val arc: Int,
+    ) : JPanel(BorderLayout(0, 0)) {
+        init {
+            isOpaque = false
+        }
+
+        override fun paintComponent(g: Graphics) {
+            val g2 = g.create() as Graphics2D
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.color = backgroundColor
+            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.color = borderColor
+            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.dispose()
+            super.paintComponent(g)
+        }
+    }
+
     private class TimelineGutter(
         private val accent: Color,
     ) : JPanel() {
@@ -1333,8 +1382,12 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val CHIP_BG = JBColor(Color(241, 245, 250), Color(53, 58, 66))
         val CHIP_BORDER = JBColor(Color(203, 212, 224), Color(84, 90, 101))
+        val CHIP_DOT = JBColor(Color(86, 128, 214), Color(120, 164, 255))
 
         val COMPOSER_BG = JBColor(Color(255, 255, 255), Color(35, 38, 44))
         val COMPOSER_BORDER = JBColor(Color(196, 204, 215), Color(86, 92, 102))
+
+        val USER_BUBBLE_BORDER = JBColor(Color(124, 159, 230), Color(86, 126, 214))
+        val ASSISTANT_BUBBLE_BORDER = JBColor(Color(116, 181, 143), Color(76, 148, 109))
     }
 }
