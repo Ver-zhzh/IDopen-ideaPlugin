@@ -208,18 +208,16 @@ class IDopenToolWindowPanel(private val project: Project) {
         topRow.add(sessionWrap)
         topRow.add(statusBadge)
 
-        val chipsRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        val chipsRow = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         chipsRow.isOpaque = false
         chipsRow.add(providerBadge)
         chipsRow.add(endpointBadge)
         chipsRow.add(modelBadge)
 
-        val summary = JPanel()
-        summary.layout = BoxLayout(summary, BoxLayout.Y_AXIS)
+        val summary = JPanel(BorderLayout())
         summary.isOpaque = false
-        summary.add(topRow)
-        summary.add(Box.createRigidArea(Dimension(0, 6)))
-        summary.add(chipsRow)
+        summary.add(topRow, BorderLayout.WEST)
+        summary.add(chipsRow, BorderLayout.EAST)
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
         right.isOpaque = false
@@ -746,7 +744,6 @@ class IDopenToolWindowPanel(private val project: Project) {
         header.isOpaque = false
         val left = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         left.isOpaque = false
-        left.add(createMiniTag(stage, accent))
         val titleLabel = JBLabel(title)
         titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
         left.add(titleLabel)
@@ -766,6 +763,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         header.add(timeLabel, BorderLayout.EAST)
         banner.add(header, BorderLayout.NORTH)
         banner.add(body, BorderLayout.CENTER)
+        banner.maximumSize = Dimension(560, banner.preferredSize.height)
 
         transcriptPanel.add(wrapCardRow(banner, false))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
@@ -1250,6 +1248,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         row.layout = BoxLayout(row, BoxLayout.X_AXIS)
         row.isOpaque = false
         row.alignmentX = Component.LEFT_ALIGNMENT
+        card.alignmentY = Component.TOP_ALIGNMENT
         if (alignRight) {
             row.add(Box.createHorizontalGlue())
             row.add(card)
@@ -1257,6 +1256,7 @@ class IDopenToolWindowPanel(private val project: Project) {
             row.add(card)
             row.add(Box.createHorizontalGlue())
         }
+        row.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height)
         return row
     }
 
