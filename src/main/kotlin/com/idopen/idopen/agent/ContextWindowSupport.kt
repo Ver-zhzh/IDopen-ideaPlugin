@@ -5,9 +5,13 @@ object ContextWindowSupport {
     private const val MIN_RECENT_MESSAGES = 8
     private const val MAX_RECENT_MESSAGES = 18
     private const val SUMMARY_LINE_LIMIT = 18
+    private const val SUMMARY_GROUP_LIMIT = 8
     private const val SUMMARY_VALUE_LIMIT = 240
 
-    fun compact(messages: List<ConversationMessage>): List<ConversationMessage> {
+    fun compact(
+        messages: List<ConversationMessage>,
+        stepGroups: List<SessionStepGroup> = emptyList(),
+    ): List<ConversationMessage> {
         if (messages.isEmpty()) return messages
 
         val leadingSystem = messages.firstOrNull() as? ConversationMessage.System
@@ -32,7 +36,7 @@ object ContextWindowSupport {
         }
 
         val olderMessages = body.dropLast(recentMessages.size)
-        val summary = summarize(olderMessages)
+        val summary = summarize(olderMessages, stepGroups, recentMessages)
         return buildList {
             if (leadingSystem != null) add(leadingSystem)
             if (summary.isNotBlank()) add(ConversationMessage.System(summary))
@@ -40,9 +44,20 @@ object ContextWindowSupport {
         }
     }
 
-    private fun summarize(messages: List<ConversationMessage>): String {
+    private fun summarize(
+        messages: List<ConversationMessage>,
+        stepGroups: List<SessionStepGroup>,
+        recentMessages: List<ConversationMessage>,
+    ): String {
         if (messages.isEmpty()) return ""
-        val lines = messages.takeLast(SUMMARY_LINE_LIMIT).mapNotNull(::summarizeMessage).filter { it.isNotBlank() }
+        val recentRoundIds = recentMessages.mapNotNull { it.roundId }.toSet()
+        val groupedLines = summarizeGroups(stepGroups, recentRoundIds)
+        val fallbackLines = messages
+            .filter { it.roundId == null || it.roundId !in recentRoundIds }
+            .takeLast(SUMMARY_LINE_LIMIT)
+            .mapNotNull(::summarizeMessage)
+            .filter { it.isNotBlank() }
+        val lines = (groupedLines + fallbackLines).takeLast(SUMMARY_LINE_LIMIT)
         if (lines.isEmpty()) return ""
         return buildString {
             appendLine("Conversation summary of earlier context:")
@@ -51,6 +66,59 @@ object ContextWindowSupport {
                 appendLine(line)
             }
         }.trim()
+    }
+
+    private fun summarizeGroups(
+        stepGroups: List<SessionStepGroup>,
+        recentRoundIds: Set<String>,
+    ): List<String> {
+        if (stepGroups.isEmpty()) return emptyList()
+        return stepGroups
+            .filter { it.roundId !in recentRoundIds }
+            .takeLast(SUMMARY_GROUP_LIMIT)
+            .mapNotNull(::summarizeGroup)
+    }
+
+    private fun summarizeGroup(group: SessionStepGroup): String? {
+        val userText = group.userEntries.lastOrNull()?.text?.let(::flatten)?.let(::truncate)
+        val assistantText = group.assistantEntries.lastOrNull()?.text?.let(::flatten)?.let(::truncate)
+        val toolNames = group.toolEntries.map { it.toolName }.distinct()
+        val approvals = buildList {
+            if (group.approvalEntries.any { it.request.type == ApprovalRequest.Type.COMMAND }) add("command")
+            if (group.approvalEntries.any { it.request.type == ApprovalRequest.Type.PATCH }) add("patch")
+        }
+        val status = when {
+            group.errorEntries.isNotEmpty() -> "error"
+            group.finished?.success == false -> "failed"
+            group.finished != null -> "completed"
+            else -> "in-progress"
+        }
+
+        if (userText == null && assistantText == null && toolNames.isEmpty() && approvals.isEmpty()) return null
+
+        return buildString {
+            append("Step ")
+            append(group.stepIndex ?: "?")
+            append(" [")
+            append(status)
+            append("]")
+            userText?.let {
+                append(" user: ")
+                append(it)
+            }
+            assistantText?.let {
+                append(" | assistant: ")
+                append(it)
+            }
+            if (toolNames.isNotEmpty()) {
+                append(" | tools: ")
+                append(toolNames.joinToString(", "))
+            }
+            if (approvals.isNotEmpty()) {
+                append(" | approvals: ")
+                append(approvals.joinToString(", "))
+            }
+        }
     }
 
     private fun summarizeMessage(message: ConversationMessage): String? {

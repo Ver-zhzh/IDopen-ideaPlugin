@@ -50,12 +50,13 @@ class SessionPersistenceSupportTest {
                 ),
                 history = listOf(
                     ConversationMessage.System("system prompt"),
-                    ConversationMessage.User("你好"),
+                    ConversationMessage.User("你好", "round-1"),
                     ConversationMessage.Assistant(
                         content = "已查看",
                         toolCalls = listOf(ToolCall("call-1", "read_file", """{"path":"README.md"}""")),
+                        roundId = "round-1",
                     ),
-                    ConversationMessage.Tool("call-1", "read_file", "README content"),
+                    ConversationMessage.Tool("call-1", "read_file", "README content", "round-1"),
                 ),
                 updatedAt = now,
                 lastCapabilityNotice = "fallback",
@@ -88,6 +89,9 @@ class SessionPersistenceSupportTest {
         assertEquals("round-1", approval.roundId)
         val assistantHistory = assertIs<ConversationMessage.Assistant>(decoded.sessions.first().history[2])
         assertEquals(1, assistantHistory.toolCalls.size)
+        assertEquals("round-1", assistantHistory.roundId)
+        val toolHistory = assertIs<ConversationMessage.Tool>(decoded.sessions.first().history[3])
+        assertEquals("round-1", toolHistory.roundId)
     }
 
     @Test

@@ -233,14 +233,17 @@ object SessionPersistenceSupport {
                 is ConversationMessage.System -> {
                     put("kind", "system")
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
                 }
                 is ConversationMessage.User -> {
                     put("kind", "user")
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
                 }
                 is ConversationMessage.Assistant -> {
                     put("kind", "assistant")
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
                     putArray("toolCalls").apply {
                         message.toolCalls.forEach { add(serializeToolCall(it)) }
                     }
@@ -250,23 +253,27 @@ object SessionPersistenceSupport {
                     put("toolCallId", message.toolCallId)
                     put("toolName", message.toolName)
                     put("content", message.content)
+                    message.roundId?.let { put("roundId", it) }
                 }
             }
         }
     }
 
     private fun deserializeConversationMessage(node: JsonNode): ConversationMessage {
+        val roundId = node.path("roundId").takeIf { !it.isMissingNode && !it.isNull }?.asText()
         return when (node.path("kind").asText()) {
-            "system" -> ConversationMessage.System(node.path("content").asText())
-            "user" -> ConversationMessage.User(node.path("content").asText())
+            "system" -> ConversationMessage.System(node.path("content").asText(), roundId)
+            "user" -> ConversationMessage.User(node.path("content").asText(), roundId)
             "assistant" -> ConversationMessage.Assistant(
                 content = node.path("content").asText(),
                 toolCalls = node.path("toolCalls").takeIf { it.isArray }?.map(::deserializeToolCall).orEmpty(),
+                roundId = roundId,
             )
             else -> ConversationMessage.Tool(
                 toolCallId = node.path("toolCallId").asText(),
                 toolName = node.path("toolName").asText(),
                 content = node.path("content").asText(),
+                roundId = roundId,
             )
         }
     }

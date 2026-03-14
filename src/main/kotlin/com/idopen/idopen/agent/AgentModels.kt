@@ -80,17 +80,29 @@ data class PatchEdit(
 )
 
 sealed interface ConversationMessage {
-    data class System(val content: String) : ConversationMessage
-    data class User(val content: String) : ConversationMessage
+    val roundId: String?
+
+    data class System(
+        val content: String,
+        override val roundId: String? = null,
+    ) : ConversationMessage
+
+    data class User(
+        val content: String,
+        override val roundId: String? = null,
+    ) : ConversationMessage
+
     data class Assistant(
         val content: String,
         val toolCalls: List<ToolCall> = emptyList(),
+        override val roundId: String? = null,
     ) : ConversationMessage
 
     data class Tool(
         val toolCallId: String,
         val toolName: String,
         val content: String,
+        override val roundId: String? = null,
     ) : ConversationMessage
 }
 

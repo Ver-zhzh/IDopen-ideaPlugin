@@ -95,7 +95,7 @@ class AgentSessionService(private val project: Project) {
                 roundId = roundId,
             )
             appendEntry(session, contextEntry)
-            session.history += ConversationMessage.System(prepared.injectedPrompt)
+            session.history += ConversationMessage.System(prepared.injectedPrompt, roundId)
             persistSessions()
             emit(SessionEvent.EntryAdded(contextEntry))
         }
@@ -106,7 +106,7 @@ class AgentSessionService(private val project: Project) {
             roundId = roundId,
         )
         appendEntry(session, userEntry)
-        session.history += ConversationMessage.User(userText)
+        session.history += ConversationMessage.User(userText, roundId)
         persistSessions()
         emit(SessionEvent.EntryAdded(userEntry))
         emitSessionsChanged()
@@ -212,7 +212,10 @@ class AgentSessionService(private val project: Project) {
             val result = client.streamChat(
                 OpenAICompatibleClient.ChatRequest(
                     providerConfig = config,
-                    messages = ContextWindowSupport.compact(session.history.toList()),
+                    messages = ContextWindowSupport.compact(
+                        messages = session.history.toList(),
+                        stepGroups = SessionStepSupport.group(session.transcript),
+                    ),
                     tools = toolDefinitions,
                 ),
             ) { delta ->
@@ -245,6 +248,7 @@ class AgentSessionService(private val project: Project) {
             session.history += ConversationMessage.Assistant(
                 content = result.text,
                 toolCalls = result.toolCalls,
+                roundId = roundId,
             )
             persistSessions()
 
@@ -308,6 +312,7 @@ class AgentSessionService(private val project: Project) {
                     toolCallId = toolCall.id,
                     toolName = toolCall.name,
                     content = output.content,
+                    roundId = roundId,
                 )
                 emitEntryUpdated(session, toolEntry)
                 emit(SessionEvent.ToolCompleted(toolCall.id, toolCall.name, output.content, output.success))
