@@ -944,9 +944,14 @@ class IDopenToolWindowPanel(private val project: Project) {
         body.lineWrap = true
         body.wrapStyleWord = true
         body.background = background
+        body.foreground = JBColor.foreground()
         body.border = BorderFactory.createEmptyBorder()
         body.margin = JBInsets(0, 0, 0, 0)
-        body.isVisible = false
+        val detailsPanel = JPanel(BorderLayout())
+        detailsPanel.isOpaque = false
+        detailsPanel.border = BorderFactory.createEmptyBorder(2, 0, 0, 0)
+        detailsPanel.add(body, BorderLayout.CENTER)
+        detailsPanel.isVisible = false
 
         val riskBox = JPanel(BorderLayout())
         riskBox.isOpaque = true
@@ -999,7 +1004,7 @@ class IDopenToolWindowPanel(private val project: Project) {
             statusLabel.isVisible = entry.request.status != ApprovalRequest.Status.PENDING
             setApprovalStatusColors(statusLabel, entry.request.status)
 
-            val expanded = body.isVisible
+            val expanded = detailsPanel.isVisible
             val pending = entry.request.status == ApprovalRequest.Status.PENDING
             actions.isVisible = expanded && pending
             approve.isVisible = pending
@@ -1009,8 +1014,8 @@ class IDopenToolWindowPanel(private val project: Project) {
         }
 
         toggle.addActionListener {
-            val expanded = !body.isVisible
-            body.isVisible = expanded
+            val expanded = !detailsPanel.isVisible
+            detailsPanel.isVisible = expanded
             refreshApprovalUi()
             toggle.text = if (expanded) "收起" else "展开"
             transcriptPanel.revalidate()
@@ -1049,7 +1054,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         center.isOpaque = false
         center.add(summaryLabel)
         center.add(Box.createRigidArea(Dimension(0, 6)))
-        center.add(body)
+        center.add(detailsPanel)
         card.add(center, BorderLayout.CENTER)
         card.add(actions, BorderLayout.SOUTH)
         refreshApprovalUi()
@@ -1064,7 +1069,7 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         transcriptPanel.add(wrapCardRow(row, false))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
-        collapsibleBodies[entry.request.id] = body
+        collapsibleBodies[entry.request.id] = detailsPanel
     }
 
     private fun renderApprovalText(request: ApprovalRequest): String {
