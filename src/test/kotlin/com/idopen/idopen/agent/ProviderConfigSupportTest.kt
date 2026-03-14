@@ -62,6 +62,7 @@ class ProviderConfigSupportTest {
         val settings = IDopenSettingsState()
 
         assertEquals(false, settings.enableToolCalling)
+        assertEquals(false, settings.trustMode)
         assertEquals(false, settings.unlimitedUsage)
         assertEquals(ToolCallingMode.AUTO.name, settings.toolCallingMode)
         assertEquals(emptyList(), settings.knownModels)

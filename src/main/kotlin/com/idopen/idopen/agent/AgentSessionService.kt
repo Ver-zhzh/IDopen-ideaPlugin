@@ -22,7 +22,7 @@ class AgentSessionService(private val project: Project) {
 
     private val client = OpenAICompatibleClient()
     private val listeners = CopyOnWriteArrayList<SessionListener>()
-    private val pendingApprovals = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
+    private val pendingApprovals = ConcurrentHashMap<String, PendingApproval>()
     private val capabilityCache = ConcurrentHashMap<String, ToolCapability>()
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val idCounter = AtomicInteger()
@@ -277,8 +277,16 @@ class AgentSessionService(private val project: Project) {
     }
 
     private fun requestApproval(request: ApprovalRequest): CompletableFuture<Boolean> {
+        if (IDopenSettingsState.getInstance().trustMode) {
+            request.status = ApprovalRequest.Status.APPROVED
+            val entry = TranscriptEntry.Approval(nextId("approval-entry"), request)
+            appendEntry(currentSession(), entry)
+            emit(SessionEvent.EntryAdded(entry))
+            return CompletableFuture.completedFuture(true)
+        }
+
         val future = CompletableFuture<Boolean>()
-        pendingApprovals[request.id] = future
+        pendingApprovals[request.id] = PendingApproval(request, future)
         val entry = TranscriptEntry.Approval(nextId("approval-entry"), request)
         appendEntry(currentSession(), entry)
         emit(SessionEvent.EntryAdded(entry))
@@ -287,7 +295,13 @@ class AgentSessionService(private val project: Project) {
     }
 
     private fun resolveApproval(callId: String, approved: Boolean) {
-        pendingApprovals.remove(callId)?.complete(approved)
+        val pending = pendingApprovals.remove(callId) ?: return
+        pending.request.status = if (approved) {
+            ApprovalRequest.Status.APPROVED
+        } else {
+            ApprovalRequest.Status.REJECTED
+        }
+        pending.future.complete(approved)
     }
 
     private fun emitFailure(session: SessionState?, message: String) {
@@ -378,5 +392,10 @@ class AgentSessionService(private val project: Project) {
         val history: MutableList<ConversationMessage>,
         var updatedAt: Instant = Instant.now(),
         var lastCapabilityNotice: String? = null,
+    )
+
+    private data class PendingApproval(
+        val request: ApprovalRequest,
+        val future: CompletableFuture<Boolean>,
     )
 }

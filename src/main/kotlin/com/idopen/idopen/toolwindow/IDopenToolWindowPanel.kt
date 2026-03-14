@@ -78,6 +78,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val endpointBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val modelBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val statusBadge = createPillLabel(Palette.STATUS_IDLE_BG, Palette.STATUS_IDLE_BORDER)
+    private val trustModeCheckBox = JBCheckBox("信任模式")
     private val unlimitedUsageCheckBox = JBCheckBox("无限制使用")
     private val attachmentChips = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
     private val messageAreas = linkedMapOf<String, JBTextArea>()
@@ -208,14 +209,21 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
         right.isOpaque = false
+        trustModeCheckBox.isOpaque = false
+        trustModeCheckBox.isSelected = IDopenSettingsState.getInstance().trustMode
+        trustModeCheckBox.toolTipText = "开启后自动批准所有命令和补丁请求。"
         unlimitedUsageCheckBox.isOpaque = false
         unlimitedUsageCheckBox.isSelected = IDopenSettingsState.getInstance().unlimitedUsage
         unlimitedUsageCheckBox.toolTipText = "开启后不再限制代理轮数和工具调用次数。"
         val settingsButton = JButton("设置")
         settingsButton.preferredSize = Dimension(86, 30)
+        right.add(trustModeCheckBox)
         right.add(unlimitedUsageCheckBox)
         right.add(settingsButton)
 
+        trustModeCheckBox.addActionListener {
+            IDopenSettingsState.getInstance().trustMode = trustModeCheckBox.isSelected
+        }
         unlimitedUsageCheckBox.addActionListener {
             IDopenSettingsState.getInstance().unlimitedUsage = unlimitedUsageCheckBox.isSelected
         }
@@ -336,6 +344,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun refreshHeader() {
         val settings = IDopenSettingsState.getInstance()
         providerBadge.text = "OpenAI-compatible"
+        trustModeCheckBox.isSelected = settings.trustMode
         unlimitedUsageCheckBox.isSelected = settings.unlimitedUsage
 
         val endpoint = settings.baseUrl.trim()
@@ -676,10 +685,12 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
         right.isOpaque = false
+        val statusLabel = createApprovalStatusLabel(entry.request.status)
         val timeLabel = JBLabel(formatTime(entry.createdAt))
         timeLabel.foreground = JBColor.GRAY
         val toggle = JButton("展开")
         toggle.margin = JBInsets(2, 8, 2, 8)
+        right.add(statusLabel)
         right.add(timeLabel)
         right.add(toggle)
 
@@ -718,16 +729,29 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val actions = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         actions.isOpaque = false
-        actions.isVisible = false
         val approve = JButton("批准")
         val reject = JButton("拒绝")
         actions.add(approve)
         actions.add(reject)
 
+        fun refreshApprovalUi() {
+            statusLabel.text = approvalStatusText(entry.request.status)
+            statusLabel.isVisible = entry.request.status != ApprovalRequest.Status.PENDING
+            setApprovalStatusColors(statusLabel, entry.request.status)
+
+            val expanded = body.isVisible
+            val pending = entry.request.status == ApprovalRequest.Status.PENDING
+            actions.isVisible = expanded && pending
+            approve.isVisible = pending
+            reject.isVisible = pending
+            approve.isEnabled = pending
+            reject.isEnabled = pending
+        }
+
         toggle.addActionListener {
             val expanded = !body.isVisible
             body.isVisible = expanded
-            actions.isVisible = expanded
+            refreshApprovalUi()
             toggle.text = if (expanded) "收起" else "展开"
             transcriptPanel.revalidate()
             transcriptPanel.repaint()
@@ -743,8 +767,8 @@ class IDopenToolWindowPanel(private val project: Project) {
             } else {
                 service.approveCommand(entry.request.id, accepted)
             }
-            approve.isEnabled = false
-            reject.isEnabled = false
+            entry.request.status = if (accepted) ApprovalRequest.Status.APPROVED else ApprovalRequest.Status.REJECTED
+            refreshApprovalUi()
         }
 
         reject.addActionListener {
@@ -753,8 +777,8 @@ class IDopenToolWindowPanel(private val project: Project) {
             } else {
                 service.approveCommand(entry.request.id, false)
             }
-            approve.isEnabled = false
-            reject.isEnabled = false
+            entry.request.status = ApprovalRequest.Status.REJECTED
+            refreshApprovalUi()
         }
 
         header.add(left, BorderLayout.WEST)
@@ -768,6 +792,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         center.add(body)
         card.add(center, BorderLayout.CENTER)
         card.add(actions, BorderLayout.SOUTH)
+        refreshApprovalUi()
 
         transcriptPanel.add(wrapCardRow(card, false))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 8)))
@@ -778,6 +803,30 @@ class IDopenToolWindowPanel(private val project: Project) {
         return when (val payload = request.payload) {
             is ApprovalPayload.Command -> "命令：${payload.command}\n工作目录：${payload.workingDirectory}"
             is ApprovalPayload.Patch -> "文件：${payload.filePath}\n说明：${payload.explanation}"
+        }
+    }
+
+    private fun approvalStatusText(status: ApprovalRequest.Status): String {
+        return when (status) {
+            ApprovalRequest.Status.PENDING -> ""
+            ApprovalRequest.Status.APPROVED -> "已批准"
+            ApprovalRequest.Status.REJECTED -> "已拒绝"
+        }
+    }
+
+    private fun createApprovalStatusLabel(status: ApprovalRequest.Status): JBLabel {
+        return createPillLabel(Palette.STATUS_DONE_BG, Palette.STATUS_DONE_BORDER).apply {
+            font = font.deriveFont(Font.BOLD, font.size2D - 1f)
+            text = approvalStatusText(status)
+            isVisible = status != ApprovalRequest.Status.PENDING
+        }
+    }
+
+    private fun setApprovalStatusColors(label: JBLabel, status: ApprovalRequest.Status) {
+        when (status) {
+            ApprovalRequest.Status.PENDING -> setPillColors(label, Palette.STATUS_IDLE_BG, Palette.STATUS_IDLE_BORDER)
+            ApprovalRequest.Status.APPROVED -> setPillColors(label, Palette.STATUS_DONE_BG, Palette.STATUS_DONE_BORDER)
+            ApprovalRequest.Status.REJECTED -> setPillColors(label, Palette.STATUS_ERROR_BG, Palette.STATUS_ERROR_BORDER)
         }
     }
 
