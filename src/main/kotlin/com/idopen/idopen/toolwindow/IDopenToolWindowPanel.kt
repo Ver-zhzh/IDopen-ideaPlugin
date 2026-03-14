@@ -126,6 +126,8 @@ class IDopenToolWindowPanel(private val project: Project) {
 
     private fun configureSessionSelector() {
         sessionSelector.preferredSize = Dimension(180, 28)
+        sessionSelector.isOpaque = false
+        sessionSelector.border = BorderFactory.createEmptyBorder(0, 4, 0, 4)
         sessionSelector.renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
                 list: JList<*>?,
@@ -144,7 +146,9 @@ class IDopenToolWindowPanel(private val project: Project) {
             val summary = sessionSelector.selectedItem as? ChatSessionSummary ?: return@addActionListener
             service.selectSession(summary.id)
         }
-        newSessionButton.margin = JBInsets(2, 8, 2, 8)
+        newSessionButton.text = "+"
+        newSessionButton.margin = JBInsets(2, 10, 2, 10)
+        newSessionButton.isOpaque = false
         newSessionButton.toolTipText = "新建会话"
         newSessionButton.addActionListener {
             service.createSession()
@@ -190,8 +194,15 @@ class IDopenToolWindowPanel(private val project: Project) {
         val topRow = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         topRow.isOpaque = false
         topRow.add(title)
-        topRow.add(sessionSelector)
-        topRow.add(newSessionButton)
+        val sessionWrap = JPanel(BorderLayout(6, 0))
+        sessionWrap.background = Palette.HEADER_FIELD_BG
+        sessionWrap.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Palette.HEADER_FIELD_BORDER),
+            BorderFactory.createEmptyBorder(2, 6, 2, 4),
+        )
+        sessionWrap.add(sessionSelector, BorderLayout.CENTER)
+        sessionWrap.add(newSessionButton, BorderLayout.EAST)
+        topRow.add(sessionWrap)
         topRow.add(statusBadge)
 
         val chipsRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
@@ -528,14 +539,14 @@ class IDopenToolWindowPanel(private val project: Project) {
     ) {
         if (messageAreas.containsKey(id)) return
 
-        val card = JPanel(BorderLayout(0, 8))
-        card.maximumSize = Dimension(if (alignRight) 500 else 620, Int.MAX_VALUE)
+        val card = JPanel(BorderLayout(0, 6))
+        card.maximumSize = Dimension(if (alignRight) 460 else 560, Int.MAX_VALUE)
         card.background = background
         card.border = BorderFactory.createCompoundBorder(
             BorderFactory.createMatteBorder(0, 3, 0, 0, accent),
             BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(Palette.BORDER),
-                BorderFactory.createEmptyBorder(8, 10, 8, 10),
+                BorderFactory.createEmptyBorder(7, 9, 7, 9),
             ),
         )
 
@@ -641,7 +652,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         card.add(contentComponent, BorderLayout.CENTER)
 
         transcriptPanel.add(wrapCardRow(card, alignRight))
-        transcriptPanel.add(Box.createRigidArea(Dimension(0, 8)))
+        transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
         messageAreas[id] = body
     }
 
@@ -830,14 +841,14 @@ class IDopenToolWindowPanel(private val project: Project) {
         val accent = if (isCommand) Palette.APPROVAL_COMMAND_ACCENT else Palette.APPROVAL_PATCH_ACCENT
         val background = if (isCommand) Palette.APPROVAL_COMMAND_BG else Palette.APPROVAL_PATCH_BG
 
-        val card = JPanel(BorderLayout(0, 10))
-        card.maximumSize = Dimension(620, Int.MAX_VALUE)
+        val card = JPanel(BorderLayout(0, 8))
+        card.maximumSize = Dimension(560, Int.MAX_VALUE)
         card.background = background
         card.border = BorderFactory.createCompoundBorder(
             BorderFactory.createMatteBorder(0, 4, 0, 0, accent),
             BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(Palette.BORDER),
-                BorderFactory.createEmptyBorder(10, 12, 10, 12),
+                BorderFactory.createEmptyBorder(8, 10, 8, 10),
             ),
         )
 
@@ -894,6 +905,21 @@ class IDopenToolWindowPanel(private val project: Project) {
         riskInner.add(Box.createRigidArea(Dimension(0, 4)))
         riskInner.add(riskText)
         riskBox.add(riskInner, BorderLayout.CENTER)
+
+        val summaryLabel = JBLabel(
+            if (isCommand) {
+                "将在当前项目中执行 Shell 命令"
+            } else {
+                "将修改目标文件并应用补丁"
+            },
+        )
+        summaryLabel.foreground = JBColor.GRAY
+        summaryLabel.background = if (isCommand) Palette.APPROVAL_COMMAND_WARN_BG else Palette.APPROVAL_PATCH_WARN_BG
+        summaryLabel.isOpaque = true
+        summaryLabel.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(if (isCommand) Palette.APPROVAL_COMMAND_WARN_BORDER else Palette.APPROVAL_PATCH_WARN_BORDER),
+            BorderFactory.createEmptyBorder(6, 8, 6, 8),
+        )
 
         val actions = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         actions.isOpaque = false
@@ -955,15 +981,15 @@ class IDopenToolWindowPanel(private val project: Project) {
         val center = JPanel()
         center.layout = BoxLayout(center, BoxLayout.Y_AXIS)
         center.isOpaque = false
-        center.add(riskBox)
-        center.add(Box.createRigidArea(Dimension(0, 8)))
+        center.add(summaryLabel)
+        center.add(Box.createRigidArea(Dimension(0, 6)))
         center.add(body)
         card.add(center, BorderLayout.CENTER)
         card.add(actions, BorderLayout.SOUTH)
         refreshApprovalUi()
 
         transcriptPanel.add(wrapCardRow(card, false))
-        transcriptPanel.add(Box.createRigidArea(Dimension(0, 8)))
+        transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
         collapsibleBodies[entry.request.id] = body
     }
 
@@ -1251,6 +1277,8 @@ class IDopenToolWindowPanel(private val project: Project) {
         val CANVAS = JBColor(Color(245, 246, 248), Color(33, 36, 41))
         val SURFACE = JBColor(Color(255, 255, 255), Color(40, 43, 48))
         val BORDER = JBColor(Color(219, 223, 230), Color(76, 81, 89))
+        val HEADER_FIELD_BG = JBColor(Color(247, 248, 251), Color(46, 49, 56))
+        val HEADER_FIELD_BORDER = JBColor(Color(206, 211, 218), Color(82, 87, 96))
         val SYSTEM_STRIP_BG = JBColor(Color(249, 247, 241), Color(48, 45, 39))
         val SYSTEM_STRIP_BORDER = JBColor(Color(230, 219, 183), Color(88, 82, 67))
 
