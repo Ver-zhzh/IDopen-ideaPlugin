@@ -71,6 +71,15 @@ data class ChatSessionSummary(
     val running: Boolean,
 )
 
+data class ChatSessionSnapshot(
+    val sessionId: String,
+    val title: String,
+    val updatedAt: Instant,
+    val running: Boolean,
+    val transcript: List<TranscriptEntry>,
+    val stepGroups: List<SessionStepGroup>,
+)
+
 data class PatchEdit(
     val search: String? = null,
     val replace: String? = null,
@@ -248,6 +257,8 @@ sealed interface SessionEvent {
         val summaries: List<ChatSessionSummary>,
         val activeSessionId: String,
     ) : SessionEvent
+
+    data class SessionSnapshotChanged(val snapshot: ChatSessionSnapshot) : SessionEvent
 
     data class EntryAdded(val entry: TranscriptEntry) : SessionEvent
     data class EntryUpdated(val entry: TranscriptEntry) : SessionEvent

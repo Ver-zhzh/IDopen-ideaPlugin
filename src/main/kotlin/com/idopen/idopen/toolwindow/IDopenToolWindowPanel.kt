@@ -5,6 +5,7 @@ import com.idopen.idopen.agent.ApprovalPayload
 import com.idopen.idopen.agent.ApprovalRequest
 import com.idopen.idopen.agent.AttachmentContext
 import com.idopen.idopen.agent.ChatSessionSummary
+import com.idopen.idopen.agent.ChatSessionSnapshot
 import com.idopen.idopen.agent.SessionEvent
 import com.idopen.idopen.agent.SessionListener
 import com.idopen.idopen.agent.TranscriptEntry
@@ -91,6 +92,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val emptyState = createEmptyState()
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
     private var currentSessionId: String = service.getCurrentSessionId()
+    private var currentSnapshot: ChatSessionSnapshot = service.getCurrentSessionSnapshot()
     private var updatingSessionSelector = false
     private var lastRenderedRoundId: String? = null
     private var renderedRoundCount: Int = 0
@@ -180,13 +182,12 @@ class IDopenToolWindowPanel(private val project: Project) {
         updatingSessionSelector = false
     }
 
-    private fun renderCurrentTranscript() {
+    private fun renderCurrentTranscript(transcript: List<TranscriptEntry> = currentSnapshot.transcript) {
         messageAreas.clear()
         collapsibleBodies.clear()
         lastRenderedRoundId = null
         renderedRoundCount = 0
         transcriptPanel.removeAll()
-        val transcript = service.getTranscript()
         if (transcript.isEmpty()) {
             transcriptPanel.add(emptyState)
         } else {
@@ -425,11 +426,18 @@ class IDopenToolWindowPanel(private val project: Project) {
                     refreshSessionSelector(event.summaries, event.activeSessionId)
                     if (event.activeSessionId != currentSessionId) {
                         currentSessionId = event.activeSessionId
+                        currentSnapshot = service.getCurrentSessionSnapshot()
                         renderCurrentTranscript()
                     }
                 }
-                is SessionEvent.EntryAdded -> renderTranscriptEntry(event.entry)
-                is SessionEvent.EntryUpdated -> renderCurrentTranscript()
+                is SessionEvent.SessionSnapshotChanged -> {
+                    if (event.snapshot.sessionId == currentSessionId) {
+                        currentSnapshot = event.snapshot
+                        renderCurrentTranscript(event.snapshot.transcript)
+                    }
+                }
+                is SessionEvent.EntryAdded -> Unit
+                is SessionEvent.EntryUpdated -> Unit
                 is SessionEvent.MessageDelta -> messageAreas[event.messageId]?.invoke(event.snapshot)
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")

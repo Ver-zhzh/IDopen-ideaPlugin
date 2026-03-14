@@ -51,6 +51,7 @@ class AgentSessionService(private val project: Project) {
                     id = persisted.id,
                     title = persisted.title,
                     transcript = persisted.transcript.toMutableList(),
+                    stepGroups = SessionStepSupport.group(persisted.transcript),
                     history = persisted.history.toMutableList(),
                     updatedAt = persisted.updatedAt,
                     lastCapabilityNotice = persisted.lastCapabilityNotice,
@@ -65,6 +66,7 @@ class AgentSessionService(private val project: Project) {
             persistSessions()
         }
         emit(SessionEvent.SessionsChanged(getSessions(), activeSessionId))
+        emitSnapshotChanged(currentSession())
     }
 
     fun sendUserMessage(text: String, attachments: List<AttachmentContext> = emptyList()) {
@@ -97,7 +99,7 @@ class AgentSessionService(private val project: Project) {
             appendEntry(session, contextEntry)
             session.history += ConversationMessage.System(prepared.injectedPrompt, roundId)
             persistSessions()
-            emit(SessionEvent.EntryAdded(contextEntry))
+            emitEntryAdded(session, contextEntry)
         }
 
         val userEntry = TranscriptEntry.User(
@@ -108,7 +110,7 @@ class AgentSessionService(private val project: Project) {
         appendEntry(session, userEntry)
         session.history += ConversationMessage.User(userText, roundId)
         persistSessions()
-        emit(SessionEvent.EntryAdded(userEntry))
+        emitEntryAdded(session, userEntry)
         emitSessionsChanged()
         startRun(session.id, roundId)
     }
@@ -133,7 +135,9 @@ class AgentSessionService(private val project: Project) {
 
     fun getTranscript(): List<TranscriptEntry> = currentSession().transcript.toList()
 
-    fun getStepGroups(): List<SessionStepGroup> = SessionStepSupport.group(currentSession().transcript)
+    fun getStepGroups(): List<SessionStepGroup> = currentSession().stepGroups.toList()
+
+    fun getCurrentSessionSnapshot(): ChatSessionSnapshot = snapshot(currentSession())
 
     fun getSessions(): List<ChatSessionSummary> {
         return sessions.values.map { session ->
@@ -204,7 +208,7 @@ class AgentSessionService(private val project: Project) {
                 roundId = roundId,
             )
             appendEntry(session, stepStart)
-            emit(SessionEvent.EntryAdded(stepStart))
+            emitEntryAdded(session, stepStart)
 
             var assistantEntry: TranscriptEntry.Assistant? = null
             var stepToolCalls = 0
@@ -214,7 +218,7 @@ class AgentSessionService(private val project: Project) {
                     providerConfig = config,
                     messages = ContextWindowSupport.compact(
                         messages = session.history.toList(),
-                        stepGroups = SessionStepSupport.group(session.transcript),
+                        stepGroups = session.stepGroups,
                     ),
                     tools = toolDefinitions,
                 ),
@@ -226,7 +230,7 @@ class AgentSessionService(private val project: Project) {
                 ).also {
                     assistantEntry = it
                     appendEntry(session, it)
-                    emit(SessionEvent.EntryAdded(it))
+                    emitEntryAdded(session, it)
                 }
                 entry.text += delta
                 session.updatedAt = Instant.now()
@@ -242,7 +246,7 @@ class AgentSessionService(private val project: Project) {
                 )
                 appendEntry(session, entry)
                 assistantEntry = entry
-                emit(SessionEvent.EntryAdded(entry))
+                emitEntryAdded(session, entry)
             }
 
             session.history += ConversationMessage.Assistant(
@@ -284,7 +288,7 @@ class AgentSessionService(private val project: Project) {
                     roundId = roundId,
                 )
                 appendEntry(session, toolEntry)
-                emit(SessionEvent.EntryAdded(toolEntry))
+                emitEntryAdded(session, toolEntry)
                 emit(SessionEvent.ToolRequested(toolCall.id, toolCall.name, toolCall.argumentsJson))
 
                 val output = runCatching {
@@ -359,7 +363,7 @@ class AgentSessionService(private val project: Project) {
             roundId = roundId,
         )
         appendEntry(session, entry)
-        emit(SessionEvent.EntryAdded(entry))
+        emitEntryAdded(session, entry)
     }
 
     private fun requestApproval(request: ApprovalRequest): CompletableFuture<Boolean> {
@@ -374,19 +378,19 @@ class AgentSessionService(private val project: Project) {
                 roundId = roundId,
             )
             appendEntry(targetSession, entry)
-            emit(SessionEvent.EntryAdded(entry))
+            emitEntryAdded(targetSession, entry)
             return CompletableFuture.completedFuture(true)
         }
 
         val future = CompletableFuture<Boolean>()
-        pendingApprovals[request.id] = PendingApproval(request, future)
+        pendingApprovals[request.id] = PendingApproval(targetSession.id, request, future)
         val entry = TranscriptEntry.Approval(
             id = nextId("approval-entry"),
             request = request,
             roundId = roundId,
         )
         appendEntry(targetSession, entry)
-        emit(SessionEvent.EntryAdded(entry))
+        emitEntryAdded(targetSession, entry)
         emit(SessionEvent.ApprovalRequested(request))
         return future
     }
@@ -399,6 +403,7 @@ class AgentSessionService(private val project: Project) {
             ApprovalRequest.Status.REJECTED
         }
         persistSessions()
+        session(pending.sessionId)?.let(::emitSnapshotChanged)
         pending.future.complete(approved)
     }
 
@@ -410,7 +415,7 @@ class AgentSessionService(private val project: Project) {
             roundId = roundId,
         )
         appendEntry(target, entry)
-        emit(SessionEvent.EntryAdded(entry))
+        emitEntryAdded(target, entry)
         emit(SessionEvent.RunFailed(message))
     }
 
@@ -421,18 +426,26 @@ class AgentSessionService(private val project: Project) {
     private fun emitSessionsChanged() {
         persistSessions()
         emit(SessionEvent.SessionsChanged(getSessions(), activeSessionId))
+        emitSnapshotChanged(currentSession())
     }
 
     private fun appendEntry(session: SessionState, entry: TranscriptEntry) {
         session.transcript += entry
+        session.stepGroups = SessionStepSupport.append(session.stepGroups, entry)
         session.updatedAt = Instant.now()
         persistSessions()
+    }
+
+    private fun emitEntryAdded(session: SessionState, entry: TranscriptEntry) {
+        emit(SessionEvent.EntryAdded(entry))
+        emitSnapshotChanged(session)
     }
 
     private fun emitEntryUpdated(session: SessionState, entry: TranscriptEntry) {
         session.updatedAt = Instant.now()
         persistSessions()
         emit(SessionEvent.EntryUpdated(entry))
+        emitSnapshotChanged(session)
     }
 
     private fun applyToolProgress(
@@ -473,7 +486,7 @@ class AgentSessionService(private val project: Project) {
             roundId = roundId,
         )
         appendEntry(session, entry)
-        emit(SessionEvent.EntryAdded(entry))
+        emitEntryAdded(session, entry)
     }
 
     private fun createSessionInternal(title: String): SessionState {
@@ -481,6 +494,7 @@ class AgentSessionService(private val project: Project) {
             id = nextId("session"),
             title = title,
             transcript = mutableListOf(),
+            stepGroups = emptyList(),
             history = mutableListOf(),
         )
         session.history += ConversationMessage.System(systemPrompt())
@@ -495,6 +509,21 @@ class AgentSessionService(private val project: Project) {
     private fun currentSession(): SessionState = sessions.getValue(activeSessionId)
 
     private fun session(sessionId: String): SessionState? = sessions[sessionId]
+
+    private fun snapshot(session: SessionState): ChatSessionSnapshot {
+        return ChatSessionSnapshot(
+            sessionId = session.id,
+            title = session.title,
+            updatedAt = session.updatedAt,
+            running = currentRunSessionId == session.id && isRunning(),
+            transcript = session.transcript.toList(),
+            stepGroups = session.stepGroups.toList(),
+        )
+    }
+
+    private fun emitSnapshotChanged(session: SessionState) {
+        emit(SessionEvent.SessionSnapshotChanged(snapshot(session)))
+    }
 
     private fun summarizeTitle(text: String): String {
         return SessionTitleSupport.summarize(text) ?: DEFAULT_SESSION_TITLE
@@ -551,12 +580,14 @@ class AgentSessionService(private val project: Project) {
         val id: String,
         var title: String,
         val transcript: MutableList<TranscriptEntry>,
+        var stepGroups: List<SessionStepGroup>,
         val history: MutableList<ConversationMessage>,
         var updatedAt: Instant = Instant.now(),
         var lastCapabilityNotice: String? = null,
     )
 
     private data class PendingApproval(
+        val sessionId: String,
         val request: ApprovalRequest,
         val future: CompletableFuture<Boolean>,
     )

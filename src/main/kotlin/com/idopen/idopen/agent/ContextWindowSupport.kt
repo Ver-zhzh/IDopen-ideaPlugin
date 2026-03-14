@@ -80,45 +80,7 @@ object ContextWindowSupport {
     }
 
     private fun summarizeGroup(group: SessionStepGroup): String? {
-        val userText = group.userEntries.lastOrNull()?.text?.let(::flatten)?.let(::truncate)
-        val assistantText = group.assistantEntries.lastOrNull()?.text?.let(::flatten)?.let(::truncate)
-        val toolNames = group.toolEntries.map { it.toolName }.distinct()
-        val approvals = buildList {
-            if (group.approvalEntries.any { it.request.type == ApprovalRequest.Type.COMMAND }) add("command")
-            if (group.approvalEntries.any { it.request.type == ApprovalRequest.Type.PATCH }) add("patch")
-        }
-        val status = when {
-            group.errorEntries.isNotEmpty() -> "error"
-            group.finished?.success == false -> "failed"
-            group.finished != null -> "completed"
-            else -> "in-progress"
-        }
-
-        if (userText == null && assistantText == null && toolNames.isEmpty() && approvals.isEmpty()) return null
-
-        return buildString {
-            append("Step ")
-            append(group.stepIndex ?: "?")
-            append(" [")
-            append(status)
-            append("]")
-            userText?.let {
-                append(" user: ")
-                append(it)
-            }
-            assistantText?.let {
-                append(" | assistant: ")
-                append(it)
-            }
-            if (toolNames.isNotEmpty()) {
-                append(" | tools: ")
-                append(toolNames.joinToString(", "))
-            }
-            if (approvals.isNotEmpty()) {
-                append(" | approvals: ")
-                append(approvals.joinToString(", "))
-            }
-        }
+        return SessionStepSupport.summarize(group)
     }
 
     private fun summarizeMessage(message: ConversationMessage): String? {
