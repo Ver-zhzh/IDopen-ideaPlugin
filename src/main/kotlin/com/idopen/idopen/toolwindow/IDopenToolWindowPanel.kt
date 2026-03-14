@@ -327,6 +327,9 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun refreshComposerChrome() {
         val running = service.isRunning()
         val focused = inputArea.hasFocus()
+        composerActionButton.text = if (running) "停止" else "发送"
+        composerActionButton.isOpaque = true
+        composerActionButton.foreground = JBColor(Color(255, 255, 255), Color(255, 255, 255))
         composerFrame.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(
                 if (focused) Palette.COMPOSER_ACTIVE_BORDER else Palette.COMPOSER_BORDER,
@@ -604,6 +607,9 @@ class IDopenToolWindowPanel(private val project: Project) {
         header.isOpaque = false
         val left = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         left.isOpaque = false
+        if (bubbleStyle && !alignRight) {
+            left.add(createAvatarBadge("AI", accent))
+        }
         val stageLabel = createMiniTag(stage, accent)
         val titleLabel = JBLabel(title)
         titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
@@ -619,6 +625,9 @@ class IDopenToolWindowPanel(private val project: Project) {
         right.isOpaque = false
         val timeLabel = JBLabel(formatTime(createdAt))
         timeLabel.foreground = JBColor.GRAY
+        if (bubbleStyle && alignRight) {
+            right.add(createAvatarBadge("你", accent))
+        }
         right.add(timeLabel)
 
         val pagination = if (codeBlock) PaginationState.create(text) else null
@@ -1272,6 +1281,30 @@ class IDopenToolWindowPanel(private val project: Project) {
         label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 1f)
         label.foreground = color
         return label
+    }
+
+    private fun createAvatarBadge(text: String, color: Color): JComponent {
+        return object : JPanel(BorderLayout()) {
+            init {
+                isOpaque = false
+                preferredSize = Dimension(20, 20)
+                minimumSize = Dimension(20, 20)
+                maximumSize = Dimension(20, 20)
+                val label = JBLabel(text, JBLabel.CENTER)
+                label.foreground = JBColor(Color(255, 255, 255), Color(255, 255, 255))
+                label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 1f)
+                add(label, BorderLayout.CENTER)
+            }
+
+            override fun paintComponent(g: Graphics) {
+                val g2 = g.create() as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = color
+                g2.fillOval(0, 0, width - 1, height - 1)
+                g2.dispose()
+                super.paintComponent(g)
+            }
+        }
     }
 
     private class PaginationState private constructor(
