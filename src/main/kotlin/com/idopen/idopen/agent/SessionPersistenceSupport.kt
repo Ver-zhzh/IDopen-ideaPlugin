@@ -84,6 +84,7 @@ object SessionPersistenceSupport {
     private fun serializeTranscriptEntry(entry: TranscriptEntry): ObjectNode {
         return mapper.createObjectNode().apply {
             put("id", entry.id)
+            entry.roundId?.let { put("roundId", it) }
             when (entry) {
                 is TranscriptEntry.User -> {
                     put("kind", "user")
@@ -135,21 +136,23 @@ object SessionPersistenceSupport {
     private fun deserializeTranscriptEntry(node: JsonNode): TranscriptEntry {
         val id = node.path("id").asText()
         val createdAt = Instant.ofEpochMilli(node.path("createdAt").asLong(Instant.now().toEpochMilli()))
+        val roundId = node.path("roundId").takeIf { !it.isMissingNode && !it.isNull }?.asText()
         return when (node.path("kind").asText()) {
-            "user" -> TranscriptEntry.User(id, node.path("text").asText(), createdAt)
-            "assistant" -> TranscriptEntry.Assistant(id, node.path("text").asText(), createdAt)
-            "toolCall" -> TranscriptEntry.ToolCall(id, node.path("toolName").asText(), node.path("argumentsJson").asText(), createdAt)
+            "user" -> TranscriptEntry.User(id, node.path("text").asText(), createdAt, roundId)
+            "assistant" -> TranscriptEntry.Assistant(id, node.path("text").asText(), createdAt, roundId)
+            "toolCall" -> TranscriptEntry.ToolCall(id, node.path("toolName").asText(), node.path("argumentsJson").asText(), createdAt, roundId)
             "toolResult" -> TranscriptEntry.ToolResult(
                 id = id,
                 toolName = node.path("toolName").asText(),
                 output = node.path("output").asText(),
                 success = node.path("success").asBoolean(true),
                 createdAt = createdAt,
+                roundId = roundId,
             )
-            "approval" -> TranscriptEntry.Approval(id, deserializeApproval(node.path("request")), createdAt)
-            "error" -> TranscriptEntry.Error(id, node.path("message").asText(), createdAt)
-            "context" -> TranscriptEntry.Context(id, node.path("summary").asText(), createdAt)
-            else -> TranscriptEntry.System(id, node.path("message").asText(), createdAt)
+            "approval" -> TranscriptEntry.Approval(id, deserializeApproval(node.path("request")), createdAt, roundId)
+            "error" -> TranscriptEntry.Error(id, node.path("message").asText(), createdAt, roundId)
+            "context" -> TranscriptEntry.Context(id, node.path("summary").asText(), createdAt, roundId)
+            else -> TranscriptEntry.System(id, node.path("message").asText(), createdAt, roundId)
         }
     }
 

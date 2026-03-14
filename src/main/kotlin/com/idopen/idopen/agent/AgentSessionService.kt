@@ -40,6 +40,9 @@ class AgentSessionService(private val project: Project) {
     @Volatile
     private var currentRunSessionId: String? = null
 
+    @Volatile
+    private var currentRunRoundId: String? = null
+
     init {
         val restored = sessionStore.restore()
         if (restored != null && restored.sessions.isNotEmpty()) {
@@ -74,6 +77,7 @@ class AgentSessionService(private val project: Project) {
         val settings = IDopenSettingsState.getInstance()
         val session = currentSession()
         val userText = text.trim()
+        val roundId = nextId("round")
 
         SessionTitleSupport.pickTitle(session.title, DEFAULT_SESSION_TITLE, userText)?.let { title ->
             session.title = title
@@ -85,20 +89,28 @@ class AgentSessionService(private val project: Project) {
                 attachments = attachments,
                 toolCallingEnabled = resolveToolCallingMode(settings) != ToolCallingMode.DISABLED,
             )
-            val contextEntry = TranscriptEntry.Context(nextId("context"), prepared.transcriptSummary)
+            val contextEntry = TranscriptEntry.Context(
+                id = nextId("context"),
+                summary = prepared.transcriptSummary,
+                roundId = roundId,
+            )
             appendEntry(session, contextEntry)
             session.history += ConversationMessage.System(prepared.injectedPrompt)
             persistSessions()
             emit(SessionEvent.EntryAdded(contextEntry))
         }
 
-        val userEntry = TranscriptEntry.User(nextId("user"), userText)
+        val userEntry = TranscriptEntry.User(
+            id = nextId("user"),
+            text = userText,
+            roundId = roundId,
+        )
         appendEntry(session, userEntry)
         session.history += ConversationMessage.User(userText)
         persistSessions()
         emit(SessionEvent.EntryAdded(userEntry))
         emitSessionsChanged()
-        startRun(session.id)
+        startRun(session.id, roundId)
     }
 
     fun stopCurrentRun() {
@@ -152,31 +164,33 @@ class AgentSessionService(private val project: Project) {
 
     fun isRunning(): Boolean = currentRun?.isDone == false
 
-    private fun startRun(sessionId: String) {
+    private fun startRun(sessionId: String, roundId: String) {
         currentRunSessionId = sessionId
+        currentRunRoundId = roundId
         currentRun = executor.submit {
             emit(SessionEvent.RunStateChanged(true))
             emitSessionsChanged()
-            runCatching { agentLoop(sessionId) }
-                .onFailure { emitFailure(session(sessionId), it.message ?: "未知错误") }
+            runCatching { agentLoop(sessionId, roundId) }
+                .onFailure { emitFailure(session(sessionId), it.message ?: "未知错误", roundId) }
             emit(SessionEvent.RunStateChanged(false))
             currentRunSessionId = null
+            currentRunRoundId = null
             emitSessionsChanged()
         }
     }
 
-    private fun agentLoop(sessionId: String) {
+    private fun agentLoop(sessionId: String, roundId: String) {
         val session = session(sessionId) ?: return
         val settings = IDopenSettingsState.getInstance()
         val unlimitedUsage = settings.unlimitedUsage
         val provider = ProviderConfigSupport.fromSettings(settings)
         if (provider.error != null) {
-            emitFailure(session, provider.error)
+            emitFailure(session, provider.error, roundId)
             return
         }
 
         val config = provider.config ?: return
-        val toolDefinitions = resolveToolDefinitions(session, config, settings)
+        val toolDefinitions = resolveToolDefinitions(session, config, settings, roundId)
         var totalToolCalls = 0
 
         repeat(if (unlimitedUsage) Int.MAX_VALUE else MAX_AGENT_TURNS) {
@@ -190,7 +204,11 @@ class AgentSessionService(private val project: Project) {
                     tools = toolDefinitions,
                 ),
             ) { delta ->
-                val entry = assistantEntry ?: TranscriptEntry.Assistant(nextId("assistant"), "").also {
+                val entry = assistantEntry ?: TranscriptEntry.Assistant(
+                    id = nextId("assistant"),
+                    text = "",
+                    roundId = roundId,
+                ).also {
                     assistantEntry = it
                     appendEntry(session, it)
                     emit(SessionEvent.EntryAdded(it))
@@ -202,7 +220,11 @@ class AgentSessionService(private val project: Project) {
             }
 
             if (assistantEntry == null && result.text.isNotBlank()) {
-                val entry = TranscriptEntry.Assistant(nextId("assistant"), result.text)
+                val entry = TranscriptEntry.Assistant(
+                    id = nextId("assistant"),
+                    text = result.text,
+                    roundId = roundId,
+                )
                 appendEntry(session, entry)
                 assistantEntry = entry
                 emit(SessionEvent.EntryAdded(entry))
@@ -220,7 +242,7 @@ class AgentSessionService(private val project: Project) {
             }
 
             if (toolDefinitions.isEmpty()) {
-                emitFailure(session, "当前模型未启用工具调用，但返回了工具请求。")
+                emitFailure(session, "当前模型未启用工具调用，但返回了工具请求。", roundId)
                 return
             }
 
@@ -228,7 +250,7 @@ class AgentSessionService(private val project: Project) {
                 if (Thread.currentThread().isInterrupted) return
                 totalToolCalls += 1
                 if (!unlimitedUsage && totalToolCalls > MAX_TOOL_CALLS) {
-                    emitFailure(session, "已达到工具调用安全上限（$MAX_TOOL_CALLS 次），任务已停止。")
+                    emitFailure(session, "已达到工具调用安全上限（$MAX_TOOL_CALLS 次），任务已停止。", roundId)
                     return
                 }
 
@@ -236,6 +258,7 @@ class AgentSessionService(private val project: Project) {
                     id = nextId("tool-call"),
                     toolName = toolCall.name,
                     argumentsJson = toolCall.argumentsJson,
+                    roundId = roundId,
                 )
                 appendEntry(session, toolEntry)
                 emit(SessionEvent.EntryAdded(toolEntry))
@@ -249,6 +272,7 @@ class AgentSessionService(private val project: Project) {
                     toolName = toolCall.name,
                     output = output.content,
                     success = output.success,
+                    roundId = roundId,
                 )
                 appendEntry(session, resultEntry)
                 session.history += ConversationMessage.Tool(
@@ -263,7 +287,7 @@ class AgentSessionService(private val project: Project) {
         }
 
         if (!unlimitedUsage) {
-            emitFailure(session, "已达到代理推理轮数上限（$MAX_AGENT_TURNS 轮），任务已停止。")
+            emitFailure(session, "已达到代理推理轮数上限（$MAX_AGENT_TURNS 轮），任务已停止。", roundId)
         }
     }
 
@@ -271,6 +295,7 @@ class AgentSessionService(private val project: Project) {
         session: SessionState,
         config: ProviderConfig,
         settings: IDopenSettingsState,
+        roundId: String?,
     ): List<ToolDefinition> {
         return when (resolveToolCallingMode(settings)) {
             ToolCallingMode.DISABLED -> emptyList()
@@ -282,38 +307,50 @@ class AgentSessionService(private val project: Project) {
                 if (capability.supportsToolCalling) {
                     tools.definitions()
                 } else {
-                    emitAutoModeNotice(session, capability)
+                    emitAutoModeNotice(session, capability, roundId)
                     emptyList()
                 }
             }
         }
     }
 
-    private fun emitAutoModeNotice(session: SessionState, capability: ToolCapability) {
+    private fun emitAutoModeNotice(session: SessionState, capability: ToolCapability, roundId: String?) {
         val detail = capability.detail?.takeIf { it.isNotBlank() } ?: "当前模型未通过工具调用探测。"
         if (session.lastCapabilityNotice == detail) return
         session.lastCapabilityNotice = detail
         val entry = TranscriptEntry.System(
             id = nextId("system"),
             message = "已自动退回纯聊天模式：$detail",
+            roundId = roundId,
         )
         appendEntry(session, entry)
         emit(SessionEvent.EntryAdded(entry))
     }
 
     private fun requestApproval(request: ApprovalRequest): CompletableFuture<Boolean> {
+        val targetSession = currentRunSessionId?.let(::session) ?: currentSession()
+        val roundId = currentRunRoundId
+
         if (IDopenSettingsState.getInstance().trustMode) {
             request.status = ApprovalRequest.Status.APPROVED
-            val entry = TranscriptEntry.Approval(nextId("approval-entry"), request)
-            appendEntry(currentSession(), entry)
+            val entry = TranscriptEntry.Approval(
+                id = nextId("approval-entry"),
+                request = request,
+                roundId = roundId,
+            )
+            appendEntry(targetSession, entry)
             emit(SessionEvent.EntryAdded(entry))
             return CompletableFuture.completedFuture(true)
         }
 
         val future = CompletableFuture<Boolean>()
         pendingApprovals[request.id] = PendingApproval(request, future)
-        val entry = TranscriptEntry.Approval(nextId("approval-entry"), request)
-        appendEntry(currentSession(), entry)
+        val entry = TranscriptEntry.Approval(
+            id = nextId("approval-entry"),
+            request = request,
+            roundId = roundId,
+        )
+        appendEntry(targetSession, entry)
         emit(SessionEvent.EntryAdded(entry))
         emit(SessionEvent.ApprovalRequested(request))
         return future
@@ -330,9 +367,13 @@ class AgentSessionService(private val project: Project) {
         pending.future.complete(approved)
     }
 
-    private fun emitFailure(session: SessionState?, message: String) {
+    private fun emitFailure(session: SessionState?, message: String, roundId: String? = currentRunRoundId) {
         val target = session ?: currentSession()
-        val entry = TranscriptEntry.Error(nextId("error"), message)
+        val entry = TranscriptEntry.Error(
+            id = nextId("error"),
+            message = message,
+            roundId = roundId,
+        )
         appendEntry(target, entry)
         emit(SessionEvent.EntryAdded(entry))
         emit(SessionEvent.RunFailed(message))
@@ -362,8 +403,8 @@ class AgentSessionService(private val project: Project) {
         )
         session.history += ConversationMessage.System(systemPrompt())
         session.transcript += TranscriptEntry.System(
-            nextId("system"),
-            "IDopen 已就绪。请先配置 OpenAI-compatible 接口，然后开始对话。",
+            id = nextId("system"),
+            message = "IDopen 已就绪。请先配置 OpenAI-compatible 接口，然后开始对话。",
         )
         sessions[session.id] = session
         return session
@@ -418,7 +459,7 @@ class AgentSessionService(private val project: Project) {
             Use read_file(path, offset, limit) for targeted reads instead of assuming full-file context.
             Use apply_patch_preview with edits for focused changes, or newContent for full-file rewrites.
             Use run_command only when it materially helps.
-            Safe read-only commands may run without approval, but mutating commands and patches still require approval.
+            Safe read-only commands may run without approval, mutating commands require approval, and dangerous commands are blocked.
             You are connected through an OpenAI-compatible chat completions API.
             The user may write in Chinese. Reply in the user's language.
         """.trimIndent()

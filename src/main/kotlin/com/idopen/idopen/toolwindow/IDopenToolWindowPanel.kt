@@ -92,6 +92,8 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
     private var currentSessionId: String = service.getCurrentSessionId()
     private var updatingSessionSelector = false
+    private var lastRenderedRoundId: String? = null
+    private var renderedRoundCount: Int = 0
     @Suppress("unused")
     private val subscription = service.subscribe(SessionListener(::handleEvent))
 
@@ -181,6 +183,8 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun renderCurrentTranscript() {
         messageAreas.clear()
         collapsibleBodies.clear()
+        lastRenderedRoundId = null
+        renderedRoundCount = 0
         transcriptPanel.removeAll()
         val transcript = service.getTranscript()
         if (transcript.isEmpty()) {
@@ -472,6 +476,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         if (transcriptPanel.components.contains(emptyState)) {
             transcriptPanel.remove(emptyState)
         }
+        maybeRenderRoundSeparator(entry)
 
         when (entry) {
             is TranscriptEntry.User -> addMessageCard(
@@ -571,6 +576,57 @@ class IDopenToolWindowPanel(private val project: Project) {
 
             is TranscriptEntry.Approval -> addApprovalCard(entry)
         }
+    }
+
+    private fun maybeRenderRoundSeparator(entry: TranscriptEntry) {
+        val roundId = entry.roundId ?: return
+        if (roundId == lastRenderedRoundId) return
+        lastRenderedRoundId = roundId
+        renderedRoundCount += 1
+
+        if (transcriptPanel.componentCount > 0) {
+            transcriptPanel.add(Box.createRigidArea(Dimension(0, 8)))
+        }
+
+        val row = JPanel()
+        row.layout = BoxLayout(row, BoxLayout.X_AXIS)
+        row.isOpaque = false
+        row.maximumSize = Dimension(Int.MAX_VALUE, 20)
+        row.alignmentX = Component.LEFT_ALIGNMENT
+
+        val leftLine = JPanel()
+        leftLine.background = Palette.BORDER
+        leftLine.preferredSize = Dimension(28, 1)
+        leftLine.maximumSize = Dimension(Int.MAX_VALUE, 1)
+
+        val rightLine = JPanel()
+        rightLine.background = Palette.BORDER
+        rightLine.preferredSize = Dimension(28, 1)
+        rightLine.maximumSize = Dimension(Int.MAX_VALUE, 1)
+
+        val label = JBLabel("第 $renderedRoundCount 轮")
+        label.foreground = JBColor.GRAY
+        label.font = label.font.deriveFont(Font.BOLD, label.font.size2D - 1f)
+
+        val leftWrap = JPanel(BorderLayout())
+        leftWrap.isOpaque = false
+        leftWrap.border = BorderFactory.createEmptyBorder(9, 0, 0, 0)
+        leftWrap.add(leftLine, BorderLayout.CENTER)
+
+        val rightWrap = JPanel(BorderLayout())
+        rightWrap.isOpaque = false
+        rightWrap.border = BorderFactory.createEmptyBorder(9, 0, 0, 0)
+        rightWrap.add(rightLine, BorderLayout.CENTER)
+
+        row.add(leftWrap)
+        row.add(Box.createRigidArea(Dimension(8, 0)))
+        row.add(label)
+        row.add(Box.createRigidArea(Dimension(8, 0)))
+        row.add(rightWrap)
+        row.add(Box.createHorizontalGlue())
+
+        transcriptPanel.add(row)
+        transcriptPanel.add(Box.createRigidArea(Dimension(0, 8)))
     }
 
     private fun addMessageCard(

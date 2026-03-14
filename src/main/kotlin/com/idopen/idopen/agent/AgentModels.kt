@@ -123,17 +123,20 @@ data class ApprovalRequest(
 
 sealed interface TranscriptEntry {
     val id: String
+    val roundId: String?
 
     data class User(
         override val id: String,
         val text: String,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 
     data class Assistant(
         override val id: String,
         var text: String,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 
     data class ToolCall(
@@ -141,6 +144,7 @@ sealed interface TranscriptEntry {
         val toolName: String,
         val argumentsJson: String,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 
     data class ToolResult(
@@ -149,30 +153,35 @@ sealed interface TranscriptEntry {
         val output: String,
         val success: Boolean,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 
     data class Approval(
         override val id: String,
         val request: ApprovalRequest,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 
     data class Error(
         override val id: String,
         val message: String,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 
     data class Context(
         override val id: String,
         val summary: String,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 
     data class System(
         override val id: String,
         val message: String,
         val createdAt: Instant = Instant.now(),
+        override val roundId: String? = null,
     ) : TranscriptEntry
 }
 
