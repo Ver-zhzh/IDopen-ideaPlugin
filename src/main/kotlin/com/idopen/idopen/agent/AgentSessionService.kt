@@ -239,32 +239,40 @@ class AgentSessionService(private val project: Project) {
                 val entry = assistantEntry ?: TranscriptEntry.Assistant(
                     id = nextId("assistant"),
                     text = "",
+                    outputParts = emptyList(),
                     roundId = roundId,
                 ).also {
                     assistantEntry = it
                     appendEntry(session, it)
                     emitEntryAdded(session, it)
                 }
-                entry.text += delta
+                entry.text = delta.snapshot
+                entry.outputParts = delta.outputParts
+                session.steps = SessionStepSupport.buildSteps(session.stepGroups)
                 session.updatedAt = Instant.now()
                 persistSessions()
-                emit(SessionEvent.MessageDelta(entry.id, delta, entry.text))
+                emit(SessionEvent.MessageDelta(entry.id, delta.delta, entry.text, entry.outputParts))
+                emitSnapshotChanged(session)
             }
 
             if (assistantEntry == null && result.text.isNotBlank()) {
                 val entry = TranscriptEntry.Assistant(
                     id = nextId("assistant"),
                     text = result.text,
+                    outputParts = result.outputParts,
                     roundId = roundId,
                 )
                 appendEntry(session, entry)
                 assistantEntry = entry
                 emitEntryAdded(session, entry)
+            } else {
+                assistantEntry?.outputParts = result.outputParts
             }
 
             session.history += ConversationMessage.Assistant(
                 content = result.text,
                 toolCalls = result.toolCalls,
+                outputParts = result.outputParts,
                 roundId = roundId,
             )
             persistSessions()
@@ -312,6 +320,14 @@ class AgentSessionService(private val project: Project) {
                     .getOrElse { ToolExecutionResult("工具执行失败：${it.message}", success = false) }
                 if (!output.success) {
                     stepSucceeded = false
+                }
+
+                if (!output.success) {
+                    (output.recoveryHint ?: FailureRecoverySupport.toolHint(
+                        toolName = toolCall.name,
+                        failureText = output.content,
+                        argumentsJson = toolCall.argumentsJson,
+                    ))?.let { appendRecoveryHint(session, it, roundId) }
                 }
 
                 toolEntry.state = if (output.success) {
@@ -422,6 +438,9 @@ class AgentSessionService(private val project: Project) {
         }
         persistSessions()
         session(pending.sessionId)?.let {
+            if (!approved) {
+                appendRecoveryHint(it, FailureRecoverySupport.approvalHint(pending.request), currentRunRoundId)
+            }
             it.steps = SessionStepSupport.buildSteps(it.stepGroups)
             emitSnapshotChanged(it)
         }
@@ -430,6 +449,7 @@ class AgentSessionService(private val project: Project) {
 
     private fun emitFailure(session: SessionState?, message: String, roundId: String? = currentRunRoundId) {
         val target = session ?: currentSession()
+        FailureRecoverySupport.runtimeHint(message)?.let { appendRecoveryHint(target, it, roundId) }
         val entry = TranscriptEntry.Error(
             id = nextId("error"),
             message = message,
@@ -582,6 +602,14 @@ class AgentSessionService(private val project: Project) {
 
     private fun emitSnapshotChanged(session: SessionState) {
         emit(SessionEvent.SessionSnapshotChanged(snapshot(session)))
+    }
+
+    private fun appendRecoveryHint(session: SessionState, hint: String, roundId: String?) {
+        session.history += ConversationMessage.System(
+            content = "Recovery hint: $hint",
+            roundId = roundId,
+        )
+        persistSessions()
     }
 
     private fun summarizeTitle(text: String): String {

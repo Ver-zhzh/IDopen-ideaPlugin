@@ -200,7 +200,9 @@ class SessionStepSupportTest {
         assertEquals(ToolInvocationState.COMPLETED, toolResultPart.state)
         assertEquals("README.md", toolResultPart.metadata["path"])
         val approvalPart = assertIs<SessionStepPart.ApprovalRequestPart>(step.parts[5])
+        assertEquals("request-1", approvalPart.requestId)
         assertEquals(ApprovalRequest.Type.PATCH, approvalPart.type)
         assertTrue(approvalPart.summary.contains("README.md"))
+        assertIs<ApprovalPayload.Patch>(approvalPart.payload)
     }
 }

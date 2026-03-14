@@ -15,8 +15,9 @@ object PatchEditSupport {
     }
 
     private fun applySearchReplace(current: String, edit: PatchEdit): String {
-        val search = edit.search ?: error("search must not be blank.")
-        val replace = edit.newText ?: edit.replace.orEmpty()
+        val lineEnding = detectLineEnding(current)
+        val search = adaptLineEndings(requireNotNull(edit.search) { "search must not be blank." }, lineEnding)
+        val replace = adaptLineEndings(edit.newText ?: edit.replace.orEmpty(), lineEnding)
         val matches = findMatches(current, search)
         require(matches.isNotEmpty()) { "Could not find the target search text." }
 
@@ -40,9 +41,13 @@ object PatchEditSupport {
     }
 
     private fun insertRelative(current: String, edit: PatchEdit, beforeAnchor: Boolean): String {
-        val anchor = if (beforeAnchor) edit.before else edit.after
+        val lineEnding = detectLineEnding(current)
+        val anchor = adaptLineEndings(
+            requireNotNull(if (beforeAnchor) edit.before else edit.after) { "An anchor string is required." },
+            lineEnding,
+        )
         require(!anchor.isNullOrBlank()) { "An anchor string is required." }
-        val insertion = edit.newText ?: edit.replace.orEmpty()
+        val insertion = adaptLineEndings(edit.newText ?: edit.replace.orEmpty(), lineEnding)
         val matches = findMatches(current, anchor)
         require(matches.isNotEmpty()) { "Could not find the requested anchor." }
 
@@ -58,18 +63,18 @@ object PatchEditSupport {
             else -> throw IllegalArgumentException("Anchor matched ${matches.size} times. Use occurrence to disambiguate.")
         }
 
-        val insertAt = if (beforeAnchor) selected.first else selected.last
+        val insertAt = if (beforeAnchor) selected.first else selected.last + 1
         return current.substring(0, insertAt) + insertion + current.substring(insertAt)
     }
 
     private fun applyLineEdit(current: String, edit: PatchEdit): String {
         val startLine = requireNotNull(edit.startLine) { "startLine must not be blank." }
         val endLine = edit.endLine ?: startLine
-        val newText = edit.newText ?: edit.replace.orEmpty()
+        val lineEnding = detectLineEnding(current)
+        val newText = adaptLineEndings(edit.newText ?: edit.replace.orEmpty(), lineEnding)
         require(startLine >= 1) { "startLine must be >= 1." }
         require(endLine >= startLine - 1) { "endLine must be >= startLine - 1." }
 
-        val lineEnding = detectLineEnding(current)
         val (lines, hasTrailingNewline) = splitLines(current)
         require(startLine <= lines.size + 1) { "startLine is outside the file line range." }
         require(endLine <= lines.size) { "endLine is outside the file line range." }
@@ -93,6 +98,10 @@ object PatchEditSupport {
 
     private fun detectLineEnding(text: String): String {
         return if (text.contains("\r\n")) "\r\n" else "\n"
+    }
+
+    private fun adaptLineEndings(text: String, lineEnding: String): String {
+        return text.replace("\r\n", "\n").replace("\n", lineEnding)
     }
 
     private fun splitLines(text: String): Pair<List<String>, Boolean> {

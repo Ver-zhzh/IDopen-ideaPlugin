@@ -94,6 +94,11 @@ object SessionPersistenceSupport {
                 is TranscriptEntry.Assistant -> {
                     put("kind", "assistant")
                     put("text", entry.text)
+                    if (entry.outputParts.isNotEmpty()) {
+                        putArray("outputParts").apply {
+                            entry.outputParts.forEach { add(serializeAssistantOutputPart(it)) }
+                        }
+                    }
                     put("createdAt", entry.createdAt.toEpochMilli())
                 }
                 is TranscriptEntry.ToolCall -> {
@@ -170,7 +175,13 @@ object SessionPersistenceSupport {
         val roundId = node.path("roundId").takeIf { !it.isMissingNode && !it.isNull }?.asText()
         return when (node.path("kind").asText()) {
             "user" -> TranscriptEntry.User(id, node.path("text").asText(), createdAt, roundId)
-            "assistant" -> TranscriptEntry.Assistant(id, node.path("text").asText(), createdAt, roundId)
+            "assistant" -> TranscriptEntry.Assistant(
+                id = id,
+                text = node.path("text").asText(),
+                outputParts = node.path("outputParts").takeIf { it.isArray }?.map(::deserializeAssistantOutputPart).orEmpty(),
+                createdAt = createdAt,
+                roundId = roundId,
+            )
             "toolCall" -> TranscriptEntry.ToolCall(id, node.path("toolName").asText(), node.path("argumentsJson").asText(), createdAt, roundId)
             "toolResult" -> TranscriptEntry.ToolResult(
                 id = id,
@@ -244,6 +255,11 @@ object SessionPersistenceSupport {
                     put("kind", "assistant")
                     put("content", message.content)
                     message.roundId?.let { put("roundId", it) }
+                    if (message.outputParts.isNotEmpty()) {
+                        putArray("outputParts").apply {
+                            message.outputParts.forEach { add(serializeAssistantOutputPart(it)) }
+                        }
+                    }
                     putArray("toolCalls").apply {
                         message.toolCalls.forEach { add(serializeToolCall(it)) }
                     }
@@ -267,6 +283,7 @@ object SessionPersistenceSupport {
             "assistant" -> ConversationMessage.Assistant(
                 content = node.path("content").asText(),
                 toolCalls = node.path("toolCalls").takeIf { it.isArray }?.map(::deserializeToolCall).orEmpty(),
+                outputParts = node.path("outputParts").takeIf { it.isArray }?.map(::deserializeAssistantOutputPart).orEmpty(),
                 roundId = roundId,
             )
             else -> ConversationMessage.Tool(
@@ -292,6 +309,43 @@ object SessionPersistenceSupport {
             name = node.path("name").asText(),
             argumentsJson = node.path("argumentsJson").asText(),
         )
+    }
+
+    private fun serializeAssistantOutputPart(part: AssistantOutputPart): ObjectNode {
+        return mapper.createObjectNode().apply {
+            when (part) {
+                is AssistantOutputPart.Text -> {
+                    put("kind", "text")
+                    put("text", part.text)
+                }
+                is AssistantOutputPart.CodeBlock -> {
+                    put("kind", "code")
+                    put("code", part.code)
+                    part.language?.let { put("language", it) }
+                }
+                is AssistantOutputPart.ListBlock -> {
+                    put("kind", "list")
+                    put("ordered", part.ordered)
+                    putArray("items").apply {
+                        part.items.forEach(::add)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun deserializeAssistantOutputPart(node: JsonNode): AssistantOutputPart {
+        return when (node.path("kind").asText()) {
+            "code" -> AssistantOutputPart.CodeBlock(
+                code = node.path("code").asText(),
+                language = node.path("language").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+            )
+            "list" -> AssistantOutputPart.ListBlock(
+                items = node.path("items").takeIf { it.isArray }?.map { it.asText() }.orEmpty(),
+                ordered = node.path("ordered").asBoolean(false),
+            )
+            else -> AssistantOutputPart.Text(node.path("text").asText())
+        }
     }
 
     private fun serializeApproval(request: ApprovalRequest): ObjectNode {

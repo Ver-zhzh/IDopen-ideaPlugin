@@ -212,6 +212,7 @@ class IntelliJAgentTools(
         endLine: Int?,
         observer: ToolExecutionObserver,
     ): ToolExecutionResult {
+        validateReadRequest(path)?.let { return it }
         observer.onUpdate(
             ToolProgressUpdate(
                 state = ToolInvocationState.RUNNING,
@@ -366,6 +367,8 @@ class IntelliJAgentTools(
         explanation: String,
         observer: ToolExecutionObserver,
     ): ToolExecutionResult {
+        return applyPatchPreviewWithRecovery(filePath, newContent, edits, explanation, observer)
+        validatePatchRequest(filePath)?.let { return it }
         observer.onUpdate(
             ToolProgressUpdate(
                 state = ToolInvocationState.PENDING,
@@ -419,6 +422,7 @@ class IntelliJAgentTools(
         workingDirectory: String?,
         observer: ToolExecutionObserver,
     ): ToolExecutionResult {
+        return runCommandWithPolicy(command, workingDirectory, observer)
         if (command.isBlank()) return ToolExecutionResult("缺少 command 参数。", success = false)
         val directory = if (workingDirectory.isNullOrBlank()) {
             projectRoot
@@ -490,6 +494,261 @@ class IntelliJAgentTools(
             }
         }.trim()
         return ToolExecutionResult(summary, success = process.exitValue() == 0)
+    }
+
+    private fun applyPatchPreviewWithRecovery(
+        filePath: String,
+        newContent: String?,
+        edits: List<PatchEdit>,
+        explanation: String,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
+        validatePatchRequest(filePath)?.let { return it }
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.PENDING,
+                title = "等待批准补丁",
+                metadata = mapOf("file" to filePath),
+            ),
+        )
+        val resolved = requireNotNull(resolveProjectPath(filePath))
+        val beforeText = if (Files.exists(resolved)) Files.readString(resolved, StandardCharsets.UTF_8) else ""
+        val patchResolution = resolvePatchContent(filePath, beforeText, newContent, edits)
+        if (patchResolution.error != null) {
+            return ToolExecutionResult(
+                content = patchResolution.error,
+                success = false,
+                recoveryHint = patchResolution.recoveryHint,
+            )
+        }
+
+        val request = ApprovalRequest(
+            id = "approval-${System.nanoTime()}",
+            type = ApprovalRequest.Type.PATCH,
+            title = "写入文件 $filePath",
+            payload = ApprovalPayload.Patch(
+                filePath = filePath,
+                beforeText = beforeText,
+                afterText = patchResolution.afterText.orEmpty(),
+                explanation = explanation.ifBlank {
+                    if (edits.isNotEmpty()) {
+                        "Generated from ${edits.size} focused edits."
+                    } else {
+                        "Generated from a full file rewrite."
+                    }
+                },
+            ),
+        )
+        val approved = approvalRequester(request).get()
+        if (!approved) {
+            return ToolExecutionResult(
+                content = "用户拒绝了这次文件修改。",
+                success = false,
+                recoveryHint = FailureRecoverySupport.approvalHint(request),
+            )
+        }
+
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "应用补丁",
+                metadata = mapOf("file" to filePath),
+            ),
+        )
+        applyFileContent(resolved, patchResolution.afterText.orEmpty())
+        return ToolExecutionResult("已将修改应用到 $filePath")
+    }
+
+    private fun runCommandWithPolicy(
+        command: String,
+        workingDirectory: String?,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
+        validateCommandRequest(command, workingDirectory)?.let { return it }
+        val directory = if (workingDirectory.isNullOrBlank()) {
+            projectRoot
+        } else {
+            requireNotNull(resolveProjectPath(workingDirectory))
+        }
+
+        val decision = CommandSafetySupport.evaluate(command)
+        if (decision.policy == CommandPolicy.BLOCKED) {
+            return ToolExecutionResult(
+                content = decision.reason ?: "命令已被阻止。",
+                success = false,
+                recoveryHint = "Use a safer read-only command or explain why a mutating command is necessary.",
+            )
+        }
+
+        if (decision.policy == CommandPolicy.REQUIRE_APPROVAL) {
+            observer.onUpdate(
+                ToolProgressUpdate(
+                    state = ToolInvocationState.PENDING,
+                    title = "等待批准命令",
+                    metadata = mapOf("command" to command, "workingDirectory" to directory.toString()),
+                ),
+            )
+            val request = ApprovalRequest(
+                id = "approval-${System.nanoTime()}",
+                type = ApprovalRequest.Type.COMMAND,
+                title = "执行命令于 ${projectRoot.relativize(directory).toString().ifBlank { "." }}",
+                payload = ApprovalPayload.Command(command, directory.toString()),
+            )
+            val approved = approvalRequester(request).get()
+            if (!approved) {
+                return ToolExecutionResult(
+                    content = "用户拒绝了这次命令执行。",
+                    success = false,
+                    recoveryHint = FailureRecoverySupport.approvalHint(request),
+                )
+            }
+        }
+
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "执行命令",
+                metadata = mapOf("command" to command, "workingDirectory" to directory.toString()),
+            ),
+        )
+        val settings = shellSettings()
+        val shell = settings.shellPath.ifBlank { com.idopen.idopen.settings.IDopenSettingsState.defaultShellPath() }
+        val shellCommand = if (System.getProperty("os.name").lowercase().contains("win")) {
+            listOf(shell, "-NoProfile", "-Command", command)
+        } else {
+            listOf(shell, "-lc", command)
+        }
+
+        val process = ProcessBuilder(shellCommand)
+            .directory(directory.toFile())
+            .redirectErrorStream(false)
+            .start()
+
+        val finished = process.waitFor(settings.commandTimeoutSeconds.toLong(), TimeUnit.SECONDS)
+        if (!finished) {
+            process.destroyForcibly()
+            return ToolExecutionResult(
+                content = "命令执行超时，已超过 ${settings.commandTimeoutSeconds} 秒。",
+                success = false,
+                recoveryHint = "Try a narrower command, or inspect files directly with IDE tools before running another shell command.",
+            )
+        }
+
+        val stdout = process.inputStream.readBytes().toString(StandardCharsets.UTF_8)
+        val stderr = process.errorStream.readBytes().toString(StandardCharsets.UTF_8)
+        val summary = buildString {
+            appendLine("退出码：${process.exitValue()}")
+            if (stdout.isNotBlank()) {
+                appendLine("标准输出：")
+                appendLine(truncate(stdout, 8000))
+            }
+            if (stderr.isNotBlank()) {
+                appendLine("错误输出：")
+                appendLine(truncate(stderr, 8000))
+            }
+        }.trim()
+        return ToolExecutionResult(
+            content = summary,
+            success = process.exitValue() == 0,
+            recoveryHint = if (process.exitValue() == 0) {
+                null
+            } else {
+                FailureRecoverySupport.toolHint("run_command", summary, command)
+            },
+        )
+    }
+
+    private fun validateReadRequest(path: String): ToolExecutionResult? {
+        if (path.isBlank()) {
+            return ToolExecutionResult(
+                content = "缺少 path 参数。",
+                success = false,
+                recoveryHint = "Provide a project-relative path, or inspect the project tree first.",
+            )
+        }
+        val resolved = resolveProjectPath(path) ?: return ToolExecutionResult(
+            content = "路径超出了当前项目范围。",
+            success = false,
+            recoveryHint = "Use a path inside the current project root.",
+        )
+        if (!Files.exists(resolved)) {
+            return ToolExecutionResult(
+                content = "文件或目录不存在：$path",
+                success = false,
+                recoveryHint = "Check the project tree or search for the file name before retrying read_file.",
+            )
+        }
+        if (!Files.isDirectory(resolved) && isLikelyBinary(resolved)) {
+            return ToolExecutionResult(
+                content = "无法读取二进制文件：$path",
+                success = false,
+                recoveryHint = "Read a text file instead, or inspect the containing directory.",
+            )
+        }
+        return null
+    }
+
+    private fun validatePatchRequest(filePath: String): ToolExecutionResult? {
+        if (filePath.isBlank()) {
+            return ToolExecutionResult(
+                content = "缺少 filePath 参数。",
+                success = false,
+                recoveryHint = "Provide a project-relative file path before generating a patch.",
+            )
+        }
+        if (resolveProjectPath(filePath) == null) {
+            return ToolExecutionResult(
+                content = "路径超出了当前项目范围。",
+                success = false,
+                recoveryHint = "Only patch files inside the current project root.",
+            )
+        }
+        return null
+    }
+
+    private fun validateCommandRequest(
+        command: String,
+        workingDirectory: String?,
+    ): ToolExecutionResult? {
+        if (command.isBlank()) {
+            return ToolExecutionResult(
+                content = "缺少 command 参数。",
+                success = false,
+                recoveryHint = "Provide a shell command, or prefer IDE read/search tools if you only need project inspection.",
+            )
+        }
+        if (!workingDirectory.isNullOrBlank() && resolveProjectPath(workingDirectory) == null) {
+            return ToolExecutionResult(
+                content = "workingDirectory 超出了当前项目范围。",
+                success = false,
+                recoveryHint = "Keep command execution inside the current project root.",
+            )
+        }
+        return null
+    }
+
+    private fun resolvePatchContent(
+        filePath: String,
+        beforeText: String,
+        newContent: String?,
+        edits: List<PatchEdit>,
+    ): PatchPreviewResolution {
+        return runCatching {
+            when {
+                !newContent.isNullOrBlank() -> PatchPreviewResolution(afterText = newContent)
+                edits.isNotEmpty() -> PatchPreviewResolution(afterText = PatchEditSupport.apply(beforeText, edits))
+                else -> error("必须提供 newContent 或 edits。")
+            }
+        }.getOrElse { throwable ->
+            PatchPreviewResolution(
+                error = "补丁生成失败：${throwable.message ?: "unknown error"}",
+                recoveryHint = FailureRecoverySupport.patchHint(
+                    filePath = filePath,
+                    edits = edits,
+                    message = throwable.message ?: "unknown error",
+                ),
+            )
+        }
     }
 
     private fun applyFileContent(target: Path, newContent: String) {
@@ -581,4 +840,10 @@ class IntelliJAgentTools(
             )
         }
     }
+
+    private data class PatchPreviewResolution(
+        val afterText: String? = null,
+        val error: String? = null,
+        val recoveryHint: String? = null,
+    )
 }

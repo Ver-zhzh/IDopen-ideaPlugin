@@ -157,7 +157,7 @@ object SessionStepSupport {
             )
             is TranscriptEntry.Assistant -> SessionStepPart.AssistantResponse(
                 text = entry.text,
-                outputParts = AssistantResponseSupport.partition(entry.text),
+                outputParts = entry.outputParts.ifEmpty { AssistantResponseSupport.partition(entry.text) },
                 createdAt = entry.createdAt,
             )
             is TranscriptEntry.ToolInvocation -> null
@@ -210,15 +210,18 @@ object SessionStepSupport {
                 is TranscriptEntry.Approval -> buildList {
                     add(
                         SessionStepPart.ApprovalRequestPart(
+                            requestId = entry.request.id,
                             title = entry.request.title,
                             type = entry.request.type,
                             summary = approvalSummary(entry.request.payload),
+                            payload = entry.request.payload,
                             createdAt = entry.createdAt,
                         ),
                     )
                     if (entry.request.status != ApprovalRequest.Status.PENDING) {
                         add(
                             SessionStepPart.ApprovalDecision(
+                                requestId = entry.request.id,
                                 title = entry.request.title,
                                 type = entry.request.type,
                                 status = entry.request.status,

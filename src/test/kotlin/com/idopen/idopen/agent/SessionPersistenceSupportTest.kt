@@ -154,4 +154,47 @@ class SessionPersistenceSupportTest {
         assertIs<TranscriptEntry.ToolCall>(decoded.sessions.first().transcript[0])
         assertIs<TranscriptEntry.ToolResult>(decoded.sessions.first().transcript[1])
     }
+
+    @Test
+    fun `assistant output parts survive persistence round trip`() {
+        val now = Instant.parse("2026-03-14T08:00:00Z")
+        val restored = SessionPersistenceSupport.decode(
+            SessionPersistenceSupport.encode(
+                activeSessionId = "session-1",
+                sessions = listOf(
+                    PersistedSessionState(
+                        id = "session-1",
+                        title = "parts",
+                        transcript = listOf(
+                            TranscriptEntry.Assistant(
+                                id = "assistant-1",
+                                text = "summary\n```kotlin\nprintln(1)\n```",
+                                createdAt = now,
+                                roundId = "round-1",
+                                outputParts = listOf(
+                                    AssistantOutputPart.Text("summary"),
+                                    AssistantOutputPart.CodeBlock("println(1)", "kotlin"),
+                                ),
+                            ),
+                        ),
+                        history = listOf(
+                            ConversationMessage.System("prompt"),
+                            ConversationMessage.Assistant(
+                                content = "summary",
+                                roundId = "round-1",
+                                outputParts = listOf(AssistantOutputPart.Text("summary")),
+                            ),
+                        ),
+                        updatedAt = now,
+                    ),
+                ),
+            ),
+        )
+
+        val assistantEntry = assertIs<TranscriptEntry.Assistant>(restored.sessions.first().transcript.single())
+        assertEquals(2, assistantEntry.outputParts.size)
+        assertIs<AssistantOutputPart.CodeBlock>(assistantEntry.outputParts.last())
+        val assistantHistory = assertIs<ConversationMessage.Assistant>(restored.sessions.first().history.last())
+        assertEquals(1, assistantHistory.outputParts.size)
+    }
 }

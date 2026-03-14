@@ -110,7 +110,23 @@ sealed interface ConversationMessage {
         val content: String,
         val toolCalls: List<ToolCall> = emptyList(),
         override val roundId: String? = null,
-    ) : ConversationMessage
+        val outputParts: List<AssistantOutputPart> = emptyList(),
+    ) : ConversationMessage {
+        constructor(
+            content: String,
+            toolCalls: List<ToolCall>,
+            roundId: String?,
+        ) : this(content, toolCalls, roundId, emptyList())
+
+        @Suppress("UNUSED_PARAMETER")
+        constructor(
+            content: String,
+            toolCalls: List<ToolCall>,
+            roundId: String?,
+            mask: Int,
+            marker: kotlin.jvm.internal.DefaultConstructorMarker?,
+        ) : this(content, toolCalls, roundId, emptyList())
+    }
 
     data class Tool(
         val toolCallId: String,
@@ -228,13 +244,16 @@ sealed interface SessionStepPart {
     ) : SessionStepPart
 
     data class ApprovalRequestPart(
+        val requestId: String,
         val title: String,
         val type: ApprovalRequest.Type,
         val summary: String,
+        val payload: ApprovalPayload,
         val createdAt: Instant,
     ) : SessionStepPart
 
     data class ApprovalDecision(
+        val requestId: String,
         val title: String,
         val type: ApprovalRequest.Type,
         val status: ApprovalRequest.Status,
@@ -268,7 +287,25 @@ sealed interface TranscriptEntry {
         var text: String,
         val createdAt: Instant = Instant.now(),
         override val roundId: String? = null,
-    ) : TranscriptEntry
+        var outputParts: List<AssistantOutputPart> = emptyList(),
+    ) : TranscriptEntry {
+        constructor(
+            id: String,
+            text: String,
+            createdAt: Instant,
+            roundId: String?,
+        ) : this(id, text, createdAt, roundId, emptyList())
+
+        @Suppress("UNUSED_PARAMETER")
+        constructor(
+            id: String,
+            text: String,
+            createdAt: Instant,
+            roundId: String?,
+            mask: Int,
+            marker: kotlin.jvm.internal.DefaultConstructorMarker?,
+        ) : this(id, text, createdAt, roundId, emptyList())
+    }
 
     data class ToolCall(
         override val id: String,
@@ -363,6 +400,7 @@ sealed interface SessionEvent {
         val messageId: String,
         val delta: String,
         val snapshot: String,
+        val outputParts: List<AssistantOutputPart> = emptyList(),
     ) : SessionEvent
 
     data class ToolRequested(
@@ -393,6 +431,7 @@ data class ToolDefinition(
 data class ToolExecutionResult(
     val content: String,
     val success: Boolean = true,
+    val recoveryHint: String? = null,
 )
 
 fun interface ToolExecutionObserver {

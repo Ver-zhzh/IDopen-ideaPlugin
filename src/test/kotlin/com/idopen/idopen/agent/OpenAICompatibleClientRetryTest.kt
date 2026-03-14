@@ -85,12 +85,14 @@ class OpenAICompatibleClientRetryTest {
                 tools = emptyList(),
             ),
         ) { delta ->
-            streamed += delta
+            streamed = delta.snapshot
         }
 
         assertEquals("你好", result.text)
         assertEquals("你好", streamed)
         assertTrue(result.toolCalls.isEmpty())
+        assertEquals(1, result.outputParts.size)
+        assertTrue(result.outputParts.first() is AssistantOutputPart.Text)
         assertEquals(2, httpClient.sendCount)
     }
 
