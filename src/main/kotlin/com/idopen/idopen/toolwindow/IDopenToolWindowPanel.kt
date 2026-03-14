@@ -493,7 +493,7 @@ class IDopenToolWindowPanel(private val project: Project) {
                 codeBlock = false,
             )
 
-            is TranscriptEntry.System -> addMessageCard(
+            is TranscriptEntry.System -> addSystemBanner(
                 id = entry.id,
                 stage = "系统",
                 title = "系统",
@@ -645,6 +645,63 @@ class IDopenToolWindowPanel(private val project: Project) {
         messageAreas[id] = body
     }
 
+    private fun addSystemBanner(
+        id: String,
+        stage: String,
+        title: String,
+        subtitle: String?,
+        text: String,
+        createdAt: Instant,
+        background: Color,
+        accent: Color,
+        collapsible: Boolean,
+        startCollapsed: Boolean,
+        alignRight: Boolean,
+        codeBlock: Boolean,
+    ) {
+        if (messageAreas.containsKey(id)) return
+
+        val banner = JPanel(BorderLayout(0, 4))
+        banner.maximumSize = Dimension(620, Int.MAX_VALUE)
+        banner.background = Palette.SYSTEM_STRIP_BG
+        banner.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 3, 0, 0, accent),
+            BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(Palette.SYSTEM_STRIP_BORDER),
+                BorderFactory.createEmptyBorder(8, 10, 8, 10),
+            ),
+        )
+
+        val header = JPanel(BorderLayout())
+        header.isOpaque = false
+        val left = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
+        left.isOpaque = false
+        left.add(createMiniTag(stage, accent))
+        val titleLabel = JBLabel(title)
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
+        left.add(titleLabel)
+
+        val timeLabel = JBLabel(formatTime(createdAt))
+        timeLabel.foreground = JBColor.GRAY
+
+        val body = JBTextArea(text)
+        body.isEditable = false
+        body.lineWrap = true
+        body.wrapStyleWord = true
+        body.background = banner.background
+        body.border = BorderFactory.createEmptyBorder()
+        body.margin = JBInsets(0, 0, 0, 0)
+
+        header.add(left, BorderLayout.WEST)
+        header.add(timeLabel, BorderLayout.EAST)
+        banner.add(header, BorderLayout.NORTH)
+        banner.add(body, BorderLayout.CENTER)
+
+        transcriptPanel.add(wrapCardRow(banner, false))
+        transcriptPanel.add(Box.createRigidArea(Dimension(0, 6)))
+        messageAreas[id] = body
+    }
+
     private fun addToolEventRow(
         id: String,
         stage: String,
@@ -656,17 +713,17 @@ class IDopenToolWindowPanel(private val project: Project) {
     ) {
         if (messageAreas.containsKey(id)) return
 
-        val row = JPanel(BorderLayout(0, 6))
+        val row = JPanel(BorderLayout(0, 0))
         row.maximumSize = Dimension(620, Int.MAX_VALUE)
         row.isOpaque = false
-        row.border = BorderFactory.createEmptyBorder(0, 2, 0, 0)
+        row.border = BorderFactory.createEmptyBorder(0, 0, 0, 0)
+
+        val gutter = TimelineGutter(accent)
+        gutter.border = BorderFactory.createEmptyBorder(0, 0, 0, 8)
 
         val header = JPanel(BorderLayout())
         header.isOpaque = false
-        header.border = BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(0, 2, 0, 0, accent),
-            BorderFactory.createEmptyBorder(2, 10, 2, 0),
-        )
+        header.border = BorderFactory.createEmptyBorder(2, 0, 2, 0)
 
         val left = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         left.isOpaque = false
@@ -704,7 +761,7 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val content = JPanel(BorderLayout(0, 6))
         content.isOpaque = false
-        content.border = BorderFactory.createEmptyBorder(0, 18, 0, 0)
+        content.border = BorderFactory.createEmptyBorder(0, 0, 0, 0)
         content.isVisible = false
 
         val contentActions = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
@@ -750,10 +807,15 @@ class IDopenToolWindowPanel(private val project: Project) {
             transcriptPanel.repaint()
         }
 
+        val center = JPanel(BorderLayout(0, 6))
+        center.isOpaque = false
         header.add(left, BorderLayout.WEST)
         header.add(right, BorderLayout.EAST)
-        row.add(header, BorderLayout.NORTH)
-        row.add(content, BorderLayout.CENTER)
+        center.add(header, BorderLayout.NORTH)
+        center.add(content, BorderLayout.CENTER)
+
+        row.add(gutter, BorderLayout.WEST)
+        row.add(center, BorderLayout.CENTER)
 
         transcriptPanel.add(wrapCardRow(row, false))
         transcriptPanel.add(Box.createRigidArea(Dimension(0, 4)))
@@ -1163,10 +1225,34 @@ class IDopenToolWindowPanel(private val project: Project) {
         }
     }
 
+    private class TimelineGutter(
+        private val accent: Color,
+    ) : JPanel() {
+        init {
+            isOpaque = false
+            preferredSize = Dimension(14, 0)
+            minimumSize = Dimension(14, 0)
+        }
+
+        override fun paintComponent(g: Graphics) {
+            super.paintComponent(g)
+            val g2 = g.create() as Graphics2D
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val x = width / 2
+            g2.color = JBColor(Color(214, 218, 224), Color(78, 84, 94))
+            g2.drawLine(x, 0, x, height)
+            g2.color = accent
+            g2.fillOval(x - 3, 10, 6, 6)
+            g2.dispose()
+        }
+    }
+
     private object Palette {
         val CANVAS = JBColor(Color(245, 246, 248), Color(33, 36, 41))
         val SURFACE = JBColor(Color(255, 255, 255), Color(40, 43, 48))
         val BORDER = JBColor(Color(219, 223, 230), Color(76, 81, 89))
+        val SYSTEM_STRIP_BG = JBColor(Color(249, 247, 241), Color(48, 45, 39))
+        val SYSTEM_STRIP_BORDER = JBColor(Color(230, 219, 183), Color(88, 82, 67))
 
         val PROVIDER_BG = JBColor(Color(234, 243, 255), Color(36, 56, 84))
         val PROVIDER_BORDER = JBColor(Color(175, 199, 236), Color(76, 110, 156))
