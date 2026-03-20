@@ -4,6 +4,7 @@ import com.idopen.idopen.settings.IDopenSettingsState
 
 enum class ProviderResponseProtocol {
     CHAT_COMPLETIONS,
+    RESPONSES,
 }
 
 data class ProviderRuntimeProfile(
@@ -23,6 +24,23 @@ object ProviderRuntimeSupport {
         capabilityLookup: (ProviderConfig) -> ToolCapability,
     ): ProviderRuntimeProfile {
         val mode = ToolCallingMode.fromStored(settings.toolCallingMode)
+        val definition = ProviderDefinitionSupport.definition(config.type)
+        if (definition.responseProtocol == ProviderResponseProtocol.RESPONSES) {
+            val toolsEnabled = mode != ToolCallingMode.DISABLED
+            return ProviderRuntimeProfile(
+                config = config,
+                responseProtocol = definition.responseProtocol,
+                supportsToolCalling = true,
+                effectiveToolMode = if (toolsEnabled) ToolCallingMode.ENABLED else ToolCallingMode.DISABLED,
+                includeTools = toolsEnabled,
+                capabilityDetail = if (toolsEnabled) {
+                    "ChatGPT account provider uses the Codex responses endpoint."
+                } else {
+                    "Tool calling disabled in settings."
+                },
+            )
+        }
+
         return when (mode) {
             ToolCallingMode.DISABLED -> ProviderRuntimeProfile(
                 config = config,

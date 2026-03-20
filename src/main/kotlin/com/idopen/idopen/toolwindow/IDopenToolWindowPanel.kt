@@ -7,13 +7,26 @@ import com.idopen.idopen.agent.AssistantOutputPart
 import com.idopen.idopen.agent.AttachmentContext
 import com.idopen.idopen.agent.ChatSessionSummary
 import com.idopen.idopen.agent.ChatSessionSnapshot
+import com.idopen.idopen.agent.McpInspectorSupport
+import com.idopen.idopen.agent.McpRuntimeSupport
+import com.idopen.idopen.agent.McpSupport
+import com.idopen.idopen.agent.ProjectAgentSupport
+import com.idopen.idopen.agent.ProviderDefinitionSupport
+import com.idopen.idopen.agent.ProviderType
 import com.idopen.idopen.agent.SessionStep
 import com.idopen.idopen.agent.SessionEvent
 import com.idopen.idopen.agent.SessionListener
 import com.idopen.idopen.agent.SessionStepPart
+import com.idopen.idopen.agent.SessionTodoItem
+import com.idopen.idopen.agent.SessionTodoStatus
+import com.idopen.idopen.agent.SkillSupport
 import com.idopen.idopen.agent.ToolInvocationState
+import com.idopen.idopen.agent.TurnExecutionOptions
 import com.idopen.idopen.agent.TranscriptEntry
+import com.idopen.idopen.settings.ChatGptQuotaSupport
+import com.idopen.idopen.settings.DisplayLanguage
 import com.idopen.idopen.settings.IDopenSettingsState
+import com.intellij.icons.AllIcons
 import com.intellij.diff.DiffContentFactory
 import com.intellij.diff.DiffManager
 import com.intellij.diff.requests.SimpleDiffRequest
@@ -21,6 +34,7 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
@@ -40,16 +54,22 @@ import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.Point
 import java.awt.RenderingHints
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.awt.event.FocusAdapter
 import java.awt.event.FocusEvent
 import java.awt.event.InputEvent
+import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
+import java.nio.file.Path
+import java.nio.file.Paths
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.max
+import kotlin.math.min
 import javax.swing.AbstractAction
 import javax.swing.BorderFactory
 import javax.swing.Box
@@ -62,20 +82,36 @@ import javax.swing.JComboBox
 import javax.swing.JEditorPane
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import javax.swing.ScrollPaneConstants
 import javax.swing.KeyStroke
+import javax.swing.JMenuItem
+import javax.swing.Popup
+import javax.swing.PopupFactory
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 import javax.swing.text.DefaultCaret
 
 class IDopenToolWindowPanel(private val project: Project) {
+    private data class SubmissionPayload(
+        val message: String,
+        val turnOptions: TurnExecutionOptions = TurnExecutionOptions(),
+    )
+
     val component: SimpleToolWindowPanel = SimpleToolWindowPanel(true, true)
 
     private val service = project.getService(AgentSessionService::class.java)
+    private val mcpRuntime = McpRuntimeSupport()
     private val transcriptPanel = JPanel()
     private val transcriptScrollPane = JBScrollPane(transcriptPanel)
     private val sessionSelector = JComboBox<ChatSessionSummary>()
     private val newSessionButton = JButton("+")
+    private val sessionActionsButton = JButton(AllIcons.Actions.More)
     private val composerFrame = JPanel(BorderLayout())
+    private val composerTitleLabel = JBLabel()
+    private val composerHintLabel = JBLabel()
     private val composerActionButton = JButton("发送")
     private val inputArea = PromptTextArea(
         "输入你的需求，例如：解释当前类、修复这个错误、搜索某个调用链，或生成修改方案...",
@@ -87,10 +123,18 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val providerBadge = createPillLabel(Palette.PROVIDER_BG, Palette.PROVIDER_BORDER)
     private val endpointBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val modelBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
+    private val agentBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val statusBadge = createPillLabel(Palette.STATUS_IDLE_BG, Palette.STATUS_IDLE_BORDER)
     private val trustModeCheckBox = JBCheckBox("信任模式")
     private val unlimitedUsageCheckBox = JBCheckBox("无限制使用")
+    private val quotaButton = JButton("Quota")
     private val attachmentChips = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+    private val slashCommandPopup = JPopupMenu()
+    private val slashSuggestionsPanel = JPanel()
+    private val slashSuggestionsList = JPanel()
+    private var slashSuggestionsPopup: Popup? = null
+    private var currentSlashSuggestions: List<SlashCommandDefinition> = emptyList()
+    private var selectedSlashSuggestionIndex: Int = 0
     private val messageAreas = linkedMapOf<String, (String) -> Unit>()
     private val collapsibleBodies = linkedMapOf<String, JComponent>()
     private val collapsedState = mutableMapOf<String, Boolean>()
@@ -122,8 +166,10 @@ class IDopenToolWindowPanel(private val project: Project) {
         inputArea.background = Palette.COMPOSER_BG
         inputArea.foreground = JBColor.foreground()
         (inputArea.caret as? DefaultCaret)?.updatePolicy = DefaultCaret.ALWAYS_UPDATE
+        agentBadge.isVisible = false
         registerSendShortcut()
         configureSessionSelector()
+        configureSlashCommands()
 
         val root = JBPanel<JBPanel<*>>(BorderLayout())
         root.background = Palette.CANVAS
@@ -132,7 +178,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         root.add(createComposer(), BorderLayout.SOUTH)
 
         component.setContent(root)
-        refreshHeader()
+        refreshHeaderView()
         updateStatus("空闲")
         refreshComposerAction()
         refreshSessionSelector(service.getSessions(), service.getCurrentSessionId())
@@ -168,6 +214,17 @@ class IDopenToolWindowPanel(private val project: Project) {
         newSessionButton.addActionListener {
             service.createSession()
         }
+        sessionActionsButton.preferredSize = Dimension(30, 28)
+        sessionActionsButton.margin = JBInsets(0, 0, 0, 0)
+        sessionActionsButton.isOpaque = false
+        sessionActionsButton.toolTipText = if (DisplayLanguage.fromStored(IDopenSettingsState.getInstance().displayLanguage) == DisplayLanguage.ZH_CN) {
+            "会话操作"
+        } else {
+            "Conversation actions"
+        }
+        sessionActionsButton.addActionListener {
+            showSessionActionsMenu(sessionActionsButton)
+        }
         composerActionButton.preferredSize = Dimension(96, 34)
         composerActionButton.addActionListener {
             if (service.isRunning()) {
@@ -175,6 +232,10 @@ class IDopenToolWindowPanel(private val project: Project) {
             } else {
                 submitMessage()
             }
+        }
+        quotaButton.preferredSize = Dimension(82, 30)
+        quotaButton.addActionListener {
+            showChatGptQuotaDialog()
         }
     }
 
@@ -184,6 +245,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         sessionSelector.selectedItem = summaries.firstOrNull { it.id == activeSessionId }
         sessionSelector.isEnabled = !service.isRunning()
         newSessionButton.isEnabled = !service.isRunning()
+        sessionActionsButton.isEnabled = !service.isRunning() && summaries.isNotEmpty()
         updatingSessionSelector = false
     }
 
@@ -194,12 +256,16 @@ class IDopenToolWindowPanel(private val project: Project) {
         lastRenderedRoundId = null
         renderedRoundCount = 0
         transcriptPanel.removeAll()
-        if (snapshot.transcript.isEmpty()) {
+        if (snapshot.transcript.isEmpty() && snapshot.todos.isEmpty()) {
             transcriptPanel.add(emptyState)
         } else {
             snapshot.transcript
                 .filter { it.roundId == null }
                 .forEach(::renderStandaloneEntry)
+
+            if (snapshot.todos.isNotEmpty()) {
+                renderTodoPanel(snapshot.todos)
+            }
 
             if (snapshot.steps.isEmpty()) {
                 snapshot.transcript
@@ -212,6 +278,84 @@ class IDopenToolWindowPanel(private val project: Project) {
         transcriptPanel.revalidate()
         transcriptPanel.repaint()
         scrollToBottom()
+    }
+
+    private fun renderTodoPanel(todos: List<SessionTodoItem>) {
+        val language = DisplayLanguage.fromStored(IDopenSettingsState.getInstance().displayLanguage)
+        val card = JPanel(BorderLayout(0, 8))
+        card.background = Palette.SYSTEM_BG
+        card.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Palette.SYSTEM_STRIP_BORDER),
+            BorderFactory.createEmptyBorder(10, 12, 10, 12),
+        )
+
+        val header = JPanel(BorderLayout(8, 0))
+        header.isOpaque = false
+        val title = JBLabel(if (language == DisplayLanguage.ZH_CN) "任务清单" else "Todo list")
+        title.font = title.font.deriveFont(Font.BOLD, title.font.size2D)
+        header.add(title, BorderLayout.WEST)
+        header.add(
+            JBLabel(todoSummaryText(todos, language)).apply {
+                foreground = JBColor.GRAY
+            },
+            BorderLayout.EAST,
+        )
+        card.add(header, BorderLayout.NORTH)
+
+        val list = JPanel()
+        list.layout = BoxLayout(list, BoxLayout.Y_AXIS)
+        list.isOpaque = false
+        todos.forEachIndexed { index, item ->
+            list.add(createTodoRow(item, language))
+            if (index != todos.lastIndex) {
+                list.add(Box.createVerticalStrut(6))
+            }
+        }
+        card.add(list, BorderLayout.CENTER)
+        transcriptPanel.add(card)
+        transcriptPanel.add(Box.createVerticalStrut(10))
+    }
+
+    private fun createTodoRow(item: SessionTodoItem, language: DisplayLanguage): JComponent {
+        val row = JPanel(BorderLayout(8, 0))
+        row.isOpaque = false
+        val pill = when (item.status) {
+            SessionTodoStatus.PENDING -> createPillLabel(Palette.STATUS_IDLE_BG, Palette.STATUS_IDLE_BORDER)
+            SessionTodoStatus.IN_PROGRESS -> createPillLabel(Palette.STATUS_RUNNING_BG, Palette.STATUS_RUNNING_BORDER)
+            SessionTodoStatus.COMPLETED -> createPillLabel(Palette.STATUS_DONE_BG, Palette.STATUS_DONE_BORDER)
+        }.apply {
+            text = todoStatusText(item.status, language)
+        }
+        val text = escapeHtml(item.content)
+        val label = JBLabel(
+            if (item.status == SessionTodoStatus.COMPLETED) {
+                "<html><s>$text</s></html>"
+            } else {
+                "<html>$text</html>"
+            },
+        )
+        row.add(pill, BorderLayout.WEST)
+        row.add(label, BorderLayout.CENTER)
+        return row
+    }
+
+    private fun todoSummaryText(todos: List<SessionTodoItem>, language: DisplayLanguage): String {
+        val pending = todos.count { it.status == SessionTodoStatus.PENDING }
+        val active = todos.count { it.status == SessionTodoStatus.IN_PROGRESS }
+        val completed = todos.count { it.status == SessionTodoStatus.COMPLETED }
+        return if (language == DisplayLanguage.ZH_CN) {
+            "${todos.size} 项 | 进行中 $active | 待办 $pending | 已完成 $completed"
+        } else {
+            "${todos.size} items | $active in progress | $pending pending | $completed completed"
+        }
+    }
+
+    private fun todoStatusText(status: SessionTodoStatus, language: DisplayLanguage): String {
+        return when (status) {
+            SessionTodoStatus.PENDING -> if (language == DisplayLanguage.ZH_CN) "待办" else "Pending"
+            SessionTodoStatus.IN_PROGRESS -> if (language == DisplayLanguage.ZH_CN) "进行中" else "In progress"
+            SessionTodoStatus.COMPLETED -> if (language == DisplayLanguage.ZH_CN) "已完成" else "Completed"
+        }
     }
 
     private fun createStatusBar(): JComponent {
@@ -228,8 +372,12 @@ class IDopenToolWindowPanel(private val project: Project) {
             BorderFactory.createLineBorder(Palette.HEADER_FIELD_BORDER),
             BorderFactory.createEmptyBorder(2, 6, 2, 4),
         )
+        val sessionButtons = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+        sessionButtons.isOpaque = false
+        sessionButtons.add(newSessionButton)
+        sessionButtons.add(sessionActionsButton)
         sessionWrap.add(sessionSelector, BorderLayout.CENTER)
-        sessionWrap.add(newSessionButton, BorderLayout.EAST)
+        sessionWrap.add(sessionButtons, BorderLayout.EAST)
         val left = JPanel()
         left.layout = BoxLayout(left, BoxLayout.Y_AXIS)
         left.isOpaque = false
@@ -242,6 +390,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         chipsRow.add(providerBadge)
         chipsRow.add(endpointBadge)
         chipsRow.add(modelBadge)
+        chipsRow.add(agentBadge)
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0))
         right.isOpaque = false
@@ -253,8 +402,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         unlimitedUsageCheckBox.toolTipText = "开启后不再限制代理轮数和工具调用次数。"
         val settingsButton = JButton("设置")
         settingsButton.preferredSize = Dimension(86, 30)
-        right.add(trustModeCheckBox)
-        right.add(unlimitedUsageCheckBox)
+        right.add(quotaButton)
         right.add(settingsButton)
 
         val rightGroup = JPanel()
@@ -274,7 +422,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         }
         settingsButton.addActionListener {
             ShowSettingsUtil.getInstance().showSettingsDialog(project, "IDopen")
-            refreshHeader()
+            refreshHeaderView()
         }
 
         val bar = JPanel(BorderLayout())
@@ -298,6 +446,12 @@ class IDopenToolWindowPanel(private val project: Project) {
         top.isOpaque = false
         top.add(title, BorderLayout.WEST)
         top.add(hint, BorderLayout.EAST)
+        refreshComposerCopy()
+        composerTitleLabel.font = composerTitleLabel.font.deriveFont(Font.BOLD)
+        composerHintLabel.foreground = JBColor.GRAY
+        top.removeAll()
+        top.add(composerTitleLabel, BorderLayout.WEST)
+        top.add(composerHintLabel, BorderLayout.EAST)
 
         composerFrame.removeAll()
         composerFrame.background = Palette.COMPOSER_BG
@@ -325,10 +479,25 @@ class IDopenToolWindowPanel(private val project: Project) {
         includeSelection.isOpaque = false
         toggles.add(includeCurrentFile)
         toggles.add(includeSelection)
+        toggles.add(Box.createRigidArea(Dimension(10, 0)))
+        toggles.add(trustModeCheckBox)
+        toggles.add(unlimitedUsageCheckBox)
         includeCurrentFile.addActionListener { refreshAttachmentChips() }
         includeSelection.addActionListener { refreshAttachmentChips() }
 
         attachmentChips.isOpaque = false
+        slashSuggestionsPanel.layout = BoxLayout(slashSuggestionsPanel, BoxLayout.Y_AXIS)
+        slashSuggestionsPanel.background = Palette.HEADER_FIELD_BG
+        slashSuggestionsPanel.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Palette.HEADER_FIELD_BORDER),
+            BorderFactory.createEmptyBorder(6, 6, 6, 6),
+        )
+        slashSuggestionsPanel.isVisible = false
+        slashSuggestionsPanel.alignmentX = Component.LEFT_ALIGNMENT
+        slashSuggestionsList.layout = BoxLayout(slashSuggestionsList, BoxLayout.Y_AXIS)
+        slashSuggestionsList.isOpaque = false
+        slashSuggestionsPanel.removeAll()
+        slashSuggestionsPanel.add(slashSuggestionsList)
 
         val footer = JPanel(BorderLayout())
         footer.isOpaque = false
@@ -353,6 +522,226 @@ class IDopenToolWindowPanel(private val project: Project) {
         refreshAttachmentChips()
         refreshComposerChrome()
         return composer
+    }
+
+    private fun configureSlashCommands() {
+        inputArea.document.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent?) = scheduleSlashCommandPopupRefresh()
+
+            override fun removeUpdate(e: DocumentEvent?) = scheduleSlashCommandPopupRefresh()
+
+            override fun changedUpdate(e: DocumentEvent?) = scheduleSlashCommandPopupRefresh()
+        })
+        inputArea.addKeyListener(object : KeyAdapter() {
+            override fun keyPressed(e: KeyEvent) {
+                if (slashSuggestionsPanel.isVisible) {
+                    when {
+                        e.keyCode == KeyEvent.VK_ESCAPE -> {
+                            hideSlashCommandSuggestions()
+                            e.consume()
+                        }
+
+                        e.keyCode == KeyEvent.VK_DOWN -> {
+                            moveSlashSuggestionSelection(1)
+                            e.consume()
+                        }
+
+                        e.keyCode == KeyEvent.VK_UP -> {
+                            moveSlashSuggestionSelection(-1)
+                            e.consume()
+                        }
+
+                        e.keyCode == KeyEvent.VK_ENTER && e.modifiersEx == 0 -> {
+                            applySelectedSlashSuggestion()
+                            e.consume()
+                        }
+
+                        e.keyCode == KeyEvent.VK_TAB && e.modifiersEx == 0 -> {
+                            applySelectedSlashSuggestion()
+                            e.consume()
+                        }
+                    }
+                } else if (e.keyCode == KeyEvent.VK_ESCAPE && slashCommandPopup.isVisible) {
+                    hideSlashCommandSuggestions()
+                    e.consume()
+                }
+            }
+        })
+        inputArea.addFocusListener(object : FocusAdapter() {
+            override fun focusLost(e: FocusEvent?) {
+                hideSlashCommandSuggestions()
+            }
+        })
+    }
+
+    private fun scheduleSlashCommandPopupRefresh() {
+        SwingUtilities.invokeLater { refreshSlashCommandSuggestions() }
+    }
+
+    private fun refreshSlashCommandSuggestions() {
+        val suggestions = SlashCommandSupport.suggestions(inputArea.text, currentProjectRoot()).take(8)
+        if (suggestions.isEmpty() || !inputArea.isShowing) {
+            hideSlashCommandSuggestions()
+            return
+        }
+        val previousSelection = currentSlashSuggestions.getOrNull(selectedSlashSuggestionIndex)
+        currentSlashSuggestions = suggestions
+        selectedSlashSuggestionIndex = previousSelection
+            ?.let { selected -> suggestions.indexOfFirst { it.name == selected.name && it.kind == selected.kind } }
+            ?.takeIf { it >= 0 }
+            ?: 0
+        renderSlashSuggestions()
+        showSlashSuggestionsOverlay()
+    }
+
+    private fun renderSlashSuggestions() {
+        val language = currentLanguage()
+        slashSuggestionsList.removeAll()
+        slashCommandPopup.removeAll()
+        currentSlashSuggestions.forEachIndexed { index, definition ->
+            val item = JMenuItem(definition.displayLabel(language))
+            item.toolTipText = definition.description(language)
+            item.addActionListener { applySlashCommandSuggestion(definition) }
+            slashCommandPopup.add(item)
+            slashSuggestionsList.add(
+                createSlashSuggestionButton(
+                    definition = definition,
+                    language = language,
+                    selected = index == selectedSlashSuggestionIndex,
+                ),
+            )
+            if (index != currentSlashSuggestions.lastIndex) {
+                slashSuggestionsList.add(Box.createRigidArea(Dimension(0, 4)))
+            }
+        }
+    }
+
+    private fun hideSlashCommandSuggestions() {
+        slashCommandPopup.isVisible = false
+        slashSuggestionsList.removeAll()
+        slashSuggestionsPanel.isVisible = false
+        slashSuggestionsPopup?.hide()
+        slashSuggestionsPopup = null
+        currentSlashSuggestions = emptyList()
+        selectedSlashSuggestionIndex = 0
+    }
+
+    private fun createSlashSuggestionButton(
+        definition: SlashCommandDefinition,
+        language: DisplayLanguage,
+        selected: Boolean,
+    ): JButton {
+        return JButton(definition.displayLabel(language)).apply {
+            horizontalAlignment = SwingConstants.LEFT
+            margin = JBInsets(4, 8, 4, 8)
+            isOpaque = true
+            background = if (selected) Palette.PROVIDER_BG else Palette.SURFACE
+            foreground = if (selected) JBColor(Color(26, 54, 93), JBColor.foreground()) else JBColor.foreground()
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(if (selected) Palette.PROVIDER_BORDER else Palette.HEADER_FIELD_BORDER),
+                BorderFactory.createEmptyBorder(2, 4, 2, 4),
+            )
+            toolTipText = definition.description(language)
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
+            addActionListener { applySlashCommandSuggestion(definition) }
+        }
+    }
+
+    private fun moveSlashSuggestionSelection(delta: Int) {
+        if (currentSlashSuggestions.isEmpty()) return
+        val size = currentSlashSuggestions.size
+        selectedSlashSuggestionIndex = ((selectedSlashSuggestionIndex + delta) % size + size) % size
+        renderSlashSuggestions()
+        slashSuggestionsPanel.revalidate()
+        slashSuggestionsPanel.repaint()
+    }
+
+    private fun applySelectedSlashSuggestion() {
+        val definition = currentSlashSuggestions.getOrNull(selectedSlashSuggestionIndex) ?: return
+        applySlashCommandSuggestion(definition)
+    }
+
+    private fun showSlashSuggestionsOverlay() {
+        if (!inputArea.isShowing) return
+        slashSuggestionsPopup?.hide()
+        slashSuggestionsPopup = null
+        slashSuggestionsPanel.isVisible = true
+        slashSuggestionsPanel.size = slashSuggestionsPanel.preferredSize
+        val location = calculateSlashPopupScreenLocation(slashSuggestionsPanel.preferredSize)
+        slashSuggestionsPopup = PopupFactory.getSharedInstance().getPopup(
+            inputArea,
+            slashSuggestionsPanel,
+            location.x,
+            location.y,
+        )
+        slashSuggestionsPopup?.show()
+    }
+
+    private fun calculateSlashPopupScreenLocation(popupSize: Dimension): Point {
+        val padding = 8
+        val caretRect = runCatching { inputArea.modelToView2D(inputArea.caretPosition.coerceAtLeast(0)) }.getOrNull()
+        val localX = (caretRect?.x?.toInt() ?: padding).coerceAtLeast(padding)
+        val localY = caretRect?.y?.toInt() ?: padding
+        val caretHeight = max(18, caretRect?.height?.toInt() ?: inputArea.getFontMetrics(inputArea.font).height)
+        val point = Point(localX, localY + caretHeight + 4)
+        SwingUtilities.convertPointToScreen(point, inputArea)
+        val screenBounds = inputArea.graphicsConfiguration?.bounds
+        if (screenBounds != null && point.y + popupSize.height > screenBounds.y + screenBounds.height - padding) {
+            point.y = (point.y - caretHeight - popupSize.height - 8).coerceAtLeast(screenBounds.y + padding)
+        }
+        if (screenBounds != null && point.x + popupSize.width > screenBounds.x + screenBounds.width - padding) {
+            point.x = (screenBounds.x + screenBounds.width - popupSize.width - padding).coerceAtLeast(screenBounds.x + padding)
+        }
+        return point
+    }
+
+    private fun showSlashCommandPopupAtCaret() {
+        slashCommandPopup.pack()
+        val popupLocation = calculateSlashPopupLocation()
+        if (slashCommandPopup.isVisible) {
+            slashCommandPopup.isVisible = false
+        }
+        slashCommandPopup.show(inputArea, popupLocation.x, popupLocation.y)
+    }
+
+    private fun calculateSlashPopupLocation(): Point {
+        val padding = 8
+        val popupSize = slashCommandPopup.preferredSize
+        val caretRect = runCatching { inputArea.modelToView2D(inputArea.caretPosition.coerceAtLeast(0)) }.getOrNull()
+        val caretX = caretRect?.x?.toInt() ?: padding
+        val caretY = caretRect?.y?.toInt() ?: padding
+        val caretHeight = max(18, caretRect?.height?.toInt() ?: inputArea.getFontMetrics(inputArea.font).height)
+        val maxX = max(padding, inputArea.width - popupSize.width - padding)
+        val x = min(max(padding, caretX), maxX)
+        val showBelow = caretY + caretHeight + popupSize.height + padding <= inputArea.height
+        val y = if (showBelow) {
+            caretY + caretHeight + 4
+        } else {
+            max(padding, caretY - popupSize.height - 4)
+        }
+        return Point(x, y)
+    }
+
+    private fun applySlashCommandSuggestion(definition: SlashCommandDefinition) {
+        inputArea.text = SlashCommandSupport.applySuggestion(inputArea.text, definition)
+        inputArea.requestFocusInWindow()
+        inputArea.caretPosition = inputArea.text.length
+        hideSlashCommandSuggestions()
+    }
+
+    private fun refreshComposerCopy() {
+        composerTitleLabel.text = t("对话", "Chat")
+        composerHintLabel.text = t(
+            "输入 / 查看命令，Ctrl+Enter 发送；附带 IDE 上下文可以让结果更准。",
+            "Type / to see commands. Ctrl+Enter sends; IDE context improves results.",
+        )
+        inputArea.updatePlaceholder(
+            t(
+                "输入你的需求，或输入 / 使用命令，例如 /project、/review、/todo ...",
+                "Type a request or use slash commands like /project, /review, or /todo ...",
+            ),
+        )
     }
 
     private fun refreshComposerChrome() {
@@ -416,27 +805,237 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun submitMessage() {
         val text = inputArea.text.trim()
         if (text.isBlank()) return
-        service.sendUserMessage(text, buildAttachments())
         inputArea.text = ""
+        val resolvedMessage = resolveSlashCommandSubmission(text)
+        hideSlashCommandSuggestions()
+        if (resolvedMessage == null) return
+        service.sendUserMessage(resolvedMessage.message, buildAttachments(), resolvedMessage.turnOptions)
+    }
+
+    private fun resolveSlashCommandSubmission(text: String): SubmissionPayload? {
+        val parsed = SlashCommandSupport.parse(text, currentProjectRoot()) ?: return SubmissionPayload(text)
+        return when (parsed.definition.kind) {
+            SlashCommandKind.ACTION -> {
+                executeSlashAction(parsed)
+                null
+            }
+
+            SlashCommandKind.PROMPT -> buildPromptSubmission(parsed)
+        }
+    }
+
+    private fun buildPromptSubmission(command: ParsedSlashCommand): SubmissionPayload? {
+        if (command.definition.id != SlashCommandId.CUSTOM) {
+            return SubmissionPayload(SlashCommandSupport.buildPrompt(command, currentLanguage()))
+        }
+
+        val projectRoot = currentProjectRoot()
+        val customCommand = ProjectSlashCommandSupport.find(projectRoot, command.definition.name)
+            ?: return SubmissionPayload(SlashCommandSupport.buildPrompt(command, currentLanguage()))
+        val prompt = SlashCommandSupport.buildPrompt(command, currentLanguage())
+        var modelOverride = customCommand.model?.takeIf { it.isNotBlank() }
+        val commandAgent = customCommand.agent?.takeIf { it.isNotBlank() }?.let { agentName ->
+            ProjectAgentSupport.find(projectRoot, agentName) ?: run {
+                Messages.showWarningDialog(
+                    project,
+                    t(
+                        "项目命令 /${customCommand.name} 引用了不存在的 agent @$agentName。",
+                        "Project command /${customCommand.name} references a missing agent @$agentName.",
+                    ),
+                    "IDopen",
+                )
+                return null
+            }
+        }
+        if (modelOverride.isNullOrBlank()) {
+            modelOverride = commandAgent?.model?.takeIf { it.isNotBlank() }
+        }
+        val systemPromptOverride = commandAgent?.let { agent ->
+            buildString {
+                appendLine("Turn-specific project agent @${agent.name}:")
+                append(agent.prompt.trim())
+            }
+        }
+        return SubmissionPayload(
+            message = prompt,
+            turnOptions = TurnExecutionOptions(
+                systemPromptOverride = systemPromptOverride,
+                modelOverride = modelOverride,
+                sourceLabel = "/${customCommand.name}",
+            ),
+        )
+    }
+
+    private fun executeSlashAction(command: ParsedSlashCommand) {
+        when (command.definition.id) {
+            SlashCommandId.HELP -> Messages.showInfoMessage(project, SlashCommandSupport.helpText(currentLanguage(), currentProjectRoot()), "IDopen")
+            SlashCommandId.NEW -> service.createSession()
+            SlashCommandId.DELETE -> confirmDeleteCurrentSession()
+            SlashCommandId.SETTINGS -> {
+                ShowSettingsUtil.getInstance().showSettingsDialog(project, "IDopen")
+                refreshHeaderView()
+                refreshAttachmentChips()
+            }
+
+            SlashCommandId.QUOTA -> showChatGptQuotaDialog()
+            SlashCommandId.COMMANDS -> showProjectCommandsDialog()
+            SlashCommandId.AGENTS -> handleProjectAgentsSlashAction(command)
+            SlashCommandId.MCP -> showMcpInspectorDialog()
+            SlashCommandId.SKILLS -> showProjectSkillsDialog()
+            SlashCommandId.STOP -> if (service.isRunning()) service.stopCurrentRun()
+            SlashCommandId.FILE -> updateAttachmentToggle(includeCurrentFile, command)
+            SlashCommandId.SELECTION -> updateAttachmentToggle(includeSelection, command)
+            SlashCommandId.TRUST -> updateBooleanSetting(command, IDopenSettingsState.getInstance().trustMode) { value ->
+                IDopenSettingsState.getInstance().trustMode = value
+                trustModeCheckBox.isSelected = value
+                refreshHeaderView()
+            }
+
+            SlashCommandId.UNLIMITED -> updateBooleanSetting(command, IDopenSettingsState.getInstance().unlimitedUsage) { value ->
+                IDopenSettingsState.getInstance().unlimitedUsage = value
+                unlimitedUsageCheckBox.isSelected = value
+                refreshHeaderView()
+            }
+
+            else -> Unit
+        }
+    }
+
+    private fun handleProjectAgentsSlashAction(command: ParsedSlashCommand) {
+        val argument = command.argument.trim()
+        if (argument.isBlank()) {
+            showProjectAgentsDialog()
+            return
+        }
+        val normalized = argument.lowercase()
+        if (normalized in setOf("off", "none", "clear", "disable", "disabled", "关闭", "清除", "取消")) {
+            val cleared = service.clearActiveProjectAgent()
+            if (cleared == null) {
+                Messages.showWarningDialog(
+                    project,
+                    t("当前正在运行，停止后再切换项目 agent。", "Stop the current run before changing the project agent."),
+                    "IDopen",
+                )
+            }
+            return
+        }
+        val activated = service.activateProjectAgent(argument)
+        if (activated == null) {
+            Messages.showWarningDialog(
+                project,
+                t(
+                    "未找到项目 agent: @$argument\n先用 /agents 查看当前项目中可用的 agent 名称。",
+                    "Project agent not found: @$argument\nUse /agents to inspect the agents available in this project.",
+                ),
+                "IDopen",
+            )
+        }
+    }
+
+    private fun updateAttachmentToggle(checkBox: JBCheckBox, command: ParsedSlashCommand) {
+        updateBooleanSetting(command, checkBox.isSelected) { value ->
+            checkBox.isSelected = value
+            refreshAttachmentChips()
+        }
+    }
+
+    private fun updateBooleanSetting(
+        command: ParsedSlashCommand,
+        currentValue: Boolean,
+        applyValue: (Boolean) -> Unit,
+    ) {
+        val intent = SlashCommandSupport.resolveToggle(command.argument)
+        if (intent == null) {
+            Messages.showWarningDialog(
+                project,
+                t(
+                    "命令参数无效：${command.argument.ifBlank { "<empty>" }}。可用值：on/off。",
+                    "Invalid command argument: ${command.argument.ifBlank { "<empty>" }}. Expected on/off.",
+                ),
+                "IDopen",
+            )
+            return
+        }
+        val nextValue = when (intent) {
+            SlashToggleIntent.ENABLE -> true
+            SlashToggleIntent.DISABLE -> false
+            SlashToggleIntent.TOGGLE -> !currentValue
+        }
+        applyValue(nextValue)
     }
 
     private fun refreshHeader() {
         val settings = IDopenSettingsState.getInstance()
-        providerBadge.text = "OpenAI-compatible"
+        val language = DisplayLanguage.fromStored(settings.displayLanguage)
+        val providerType = ProviderType.fromStored(settings.providerType)
+        val definition = ProviderDefinitionSupport.definition(providerType)
+        providerBadge.text = definition.shortLabel(language)
         trustModeCheckBox.isSelected = settings.trustMode
         unlimitedUsageCheckBox.isSelected = settings.unlimitedUsage
 
-        val endpoint = settings.baseUrl.trim()
+        val endpoint = definition.endpoint(settings)
         endpointBadge.text = if (endpoint.isBlank()) "未配置接口" else shortEndpoint(endpoint)
         endpointBadge.toolTipText = endpoint.ifBlank { "请先在设置中填写接口地址" }
 
-        val model = settings.defaultModel.trim()
+        val model = definition.preferredModel(settings)
         modelBadge.text = if (model.isBlank()) "未选模型" else shorten(model, 18)
         modelBadge.toolTipText = model.ifBlank { "请先在设置中填写默认模型" }
+        refreshComposerCopy()
+        sessionActionsButton.toolTipText = t("会话操作", "Conversation actions")
     }
+
+    private fun refreshHeaderView() {
+        val settings = IDopenSettingsState.getInstance()
+        val language = DisplayLanguage.fromStored(settings.displayLanguage)
+        val providerType = ProviderType.fromStored(settings.providerType)
+        val definition = ProviderDefinitionSupport.definition(providerType)
+        val activeAgent = currentSnapshot.activeAgentName?.let { ProjectAgentSupport.find(currentProjectRoot(), it) }
+        providerBadge.text = definition.shortLabel(language)
+        trustModeCheckBox.isSelected = settings.trustMode
+        unlimitedUsageCheckBox.isSelected = settings.unlimitedUsage
+
+        val endpoint = definition.endpoint(settings)
+        endpointBadge.text = if (endpoint.isBlank()) t("未配置接口", "No endpoint") else shortEndpoint(endpoint)
+        endpointBadge.toolTipText = endpoint.ifBlank { t("请先在设置中填写接口地址", "Configure the provider endpoint in settings first.") }
+
+        val model = activeAgent?.model?.takeIf { it.isNotBlank() } ?: definition.preferredModel(settings)
+        modelBadge.text = if (model.isBlank()) t("未选模型", "No model") else shorten(model, 18)
+        modelBadge.toolTipText = when {
+            model.isBlank() -> t("请先在设置中填写默认模型", "Configure the default model in settings first.")
+            activeAgent != null -> t("当前项目 agent: @${activeAgent.name}\n$model", "Project agent: @${activeAgent.name}\n$model")
+            else -> model
+        }
+
+        if (activeAgent != null) {
+            agentBadge.isVisible = true
+            agentBadge.text = "@${shorten(activeAgent.name, 18)}"
+            agentBadge.toolTipText = buildString {
+                append(activeAgent.description)
+                activeAgent.model?.takeIf { it.isNotBlank() }?.let {
+                    append("\nmodel: ")
+                    append(it)
+                }
+                append("\n")
+                append(activeAgent.path.fileName.toString())
+            }
+        } else {
+            agentBadge.isVisible = false
+            agentBadge.toolTipText = null
+        }
+
+        refreshComposerCopy()
+        sessionActionsButton.toolTipText = t("会话操作", "Conversation actions")
+    }
+
+    private fun currentLanguage(): DisplayLanguage = DisplayLanguage.fromStored(IDopenSettingsState.getInstance().displayLanguage)
+
+    private fun currentProjectRoot(): Path = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
+
+    private fun t(zh: String, en: String): String = if (currentLanguage() == DisplayLanguage.ZH_CN) zh else en
 
     private fun handleEvent(event: SessionEvent) {
         SwingUtilities.invokeLater {
+            var fullRefresh = false
             when (event) {
                 is SessionEvent.SessionsChanged -> {
                     refreshSessionSelector(event.summaries, event.activeSessionId)
@@ -444,22 +1043,27 @@ class IDopenToolWindowPanel(private val project: Project) {
                         currentSessionId = event.activeSessionId
                         currentSnapshot = service.getCurrentSessionSnapshot()
                         renderCurrentSnapshot()
+                        fullRefresh = true
                     }
                 }
                 is SessionEvent.SessionSnapshotChanged -> {
                     if (event.snapshot.sessionId == currentSessionId) {
                         currentSnapshot = event.snapshot
                         renderCurrentSnapshot(event.snapshot)
+                        fullRefresh = true
                     }
                 }
                 is SessionEvent.EntryAdded -> Unit
                 is SessionEvent.EntryUpdated -> Unit
-                is SessionEvent.MessageDelta -> Unit
+                is SessionEvent.MessageDelta -> {
+                    messageAreas[event.messageId]?.invoke(event.snapshot)
+                    scrollToBottom()
+                }
                 is SessionEvent.RunStateChanged -> {
                     updateStatus(if (event.running) "运行中" else "空闲")
                     refreshComposerAction()
                     refreshComposerChrome()
-                    refreshHeader()
+                    refreshHeaderView()
                 }
                 is SessionEvent.RunCompleted -> {
                     updateStatus("已完成")
@@ -475,9 +1079,12 @@ class IDopenToolWindowPanel(private val project: Project) {
                 is SessionEvent.ToolCompleted -> Unit
                 is SessionEvent.ApprovalRequested -> Unit
             }
-            transcriptPanel.revalidate()
-            transcriptPanel.repaint()
-            scrollToBottom()
+            if (fullRefresh) {
+                refreshHeaderView()
+                transcriptPanel.revalidate()
+                transcriptPanel.repaint()
+                scrollToBottom()
+            }
         }
     }
 
@@ -495,6 +1102,197 @@ class IDopenToolWindowPanel(private val project: Project) {
     private fun refreshComposerAction() {
         val running = service.isRunning()
         composerActionButton.text = if (running) "停止" else "发送"
+    }
+
+    private fun confirmDeleteCurrentSession() {
+        if (service.isRunning()) {
+            Messages.showWarningDialog(
+                project,
+                t("请先停止当前运行，再删除会话。", "Stop the current run before deleting a conversation."),
+                "IDopen",
+            )
+            return
+        }
+        val title = currentSnapshot.title.ifBlank { t("当前会话", "current conversation") }
+        val confirmed = Messages.showYesNoDialog(
+            project,
+            t(
+                "确认删除“$title”？\n这会移除 IDopen 本地保存的会话历史。",
+                "Delete \"$title\"?\nThis removes the local session history stored by IDopen.",
+            ),
+            t("删除会话", "Delete conversation"),
+            null,
+        )
+        if (confirmed != Messages.YES) return
+        if (!service.deleteSession(currentSessionId)) {
+            Messages.showErrorDialog(
+                project,
+                t("无法删除当前选中的会话。", "Unable to delete the selected conversation."),
+                t("删除会话", "Delete conversation"),
+            )
+        }
+    }
+
+    private fun showSessionActionsMenu(anchor: Component) {
+        val menu = JPopupMenu()
+
+        val newConversationItem = JMenuItem(t("新建会话", "New conversation"))
+        newConversationItem.isEnabled = !service.isRunning()
+        newConversationItem.addActionListener { service.createSession() }
+        menu.add(newConversationItem)
+
+        val deleteConversationItem = JMenuItem(t("删除当前会话", "Delete current conversation"))
+        deleteConversationItem.isEnabled = !service.isRunning() && sessionSelector.itemCount > 0
+        deleteConversationItem.addActionListener { confirmDeleteCurrentSession() }
+        menu.add(deleteConversationItem)
+
+        menu.show(anchor, 0, anchor.height)
+    }
+
+    private fun showMcpServersDialog() {
+        val projectRoot = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
+        val details = McpSupport.listToolResult(projectRoot).content
+        Messages.showInfoMessage(
+            project,
+            details,
+            t("MCP 配置", "MCP servers"),
+        )
+    }
+
+    private fun showMcpInspectorDialog() {
+        val projectRoot = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
+        val servers = McpSupport.available(projectRoot)
+        if (servers.isEmpty()) {
+            showMcpServersDialog()
+            return
+        }
+
+        val serverList = servers.joinToString("\n") { server ->
+            "- ${server.name} [${server.transport}]"
+        }
+        val selectedName = Messages.showInputDialog(
+            project,
+            t(
+                "当前项目已配置的 MCP servers:\n$serverList\n\n输入要检查的 server 名称：",
+                "Configured MCP servers for this project:\n$serverList\n\nEnter one server name to inspect:",
+            ),
+            t("MCP 服务器", "MCP servers"),
+            null,
+            servers.first().name,
+            null,
+        )?.trim()
+            ?: return
+        if (selectedName.isBlank()) return
+
+        val matchedServer = servers.firstOrNull { it.name.equals(selectedName, ignoreCase = true) }
+        if (matchedServer == null) {
+            Messages.showWarningDialog(
+                project,
+                t(
+                    "未找到 MCP server：$selectedName\n请重试输入上面列出的准确名称。",
+                    "MCP server not found: $selectedName\nRetry with one exact server name from the list above.",
+                ),
+                t("MCP 服务器", "MCP servers"),
+            )
+            return
+        }
+
+        var details: String? = null
+        ProgressManager.getInstance().runProcessWithProgressSynchronously(
+            {
+                details = McpInspectorSupport.inspectServer(projectRoot, matchedServer.name, mcpRuntime)
+            },
+            t("检查 MCP server", "Inspect MCP server"),
+            true,
+            project,
+        )
+        Messages.showInfoMessage(
+            project,
+            details ?: McpSupport.describeToolResult(projectRoot, matchedServer.name).content,
+            t("MCP 检查", "MCP inspection"),
+        )
+    }
+
+    private fun showProjectSkillsDialog() {
+        val projectRoot = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
+        val details = SkillSupport.format(SkillSupport.available(projectRoot), verbose = false)
+        Messages.showInfoMessage(
+            project,
+            details,
+            t("项目 Skills", "Project skills"),
+        )
+    }
+
+    private fun showProjectCommandsDialog() {
+        val projectRoot = currentProjectRoot()
+        val details = ProjectSlashCommandSupport.format(
+            projectRoot,
+            ProjectSlashCommandSupport.available(projectRoot),
+            verbose = true,
+        )
+        Messages.showInfoMessage(
+            project,
+            details,
+            t("\u9879\u76ee\u547d\u4ee4", "Project commands"),
+        )
+    }
+
+    private fun showProjectAgentsDialog() {
+        val projectRoot = currentProjectRoot()
+        val active = currentSnapshot.activeAgentName
+        val details = buildString {
+            active?.let {
+                appendLine(t("当前会话 agent: @$it", "Current session agent: @$it"))
+                appendLine()
+            }
+            append(
+                ProjectAgentSupport.format(
+                    projectRoot,
+                    ProjectAgentSupport.available(projectRoot),
+                    verbose = true,
+                ),
+            )
+        }
+        Messages.showInfoMessage(
+            project,
+            details,
+            t("\u9879\u76ee Agents", "Project agents"),
+        )
+    }
+
+    private fun showChatGptQuotaDialog() {
+        val settings = IDopenSettingsState.getInstance()
+        val language = DisplayLanguage.fromStored(settings.displayLanguage)
+        if (ProviderType.fromStored(settings.providerType) != ProviderType.CHATGPT_AUTH) {
+            Messages.showInfoMessage(
+                project,
+                if (language == DisplayLanguage.ZH_CN) "只有使用 ChatGPT 账号登录时才能查询额度。" else "Quota lookup is available only for ChatGPT account login.",
+                if (language == DisplayLanguage.ZH_CN) "ChatGPT 额度" else "ChatGPT quota",
+            )
+            return
+        }
+
+        var result: Result<ChatGptQuotaSupport.ChatGptQuotaStatus>? = null
+        ProgressManager.getInstance().runProcessWithProgressSynchronously(
+            { result = runCatching { ChatGptQuotaSupport.fetchQuotaStatus(settings) } },
+            if (language == DisplayLanguage.ZH_CN) "检查 ChatGPT 额度" else "Check ChatGPT quota",
+            true,
+            project,
+        )
+        val resolved = result ?: Result.failure(
+            IllegalStateException(
+                if (language == DisplayLanguage.ZH_CN) "ChatGPT 额度查询未执行。" else "ChatGPT quota lookup did not run.",
+            ),
+        )
+        resolved.onSuccess { quota ->
+            Messages.showInfoMessage(project, quota.details(language), if (language == DisplayLanguage.ZH_CN) "ChatGPT 额度" else "ChatGPT quota")
+        }.onFailure { error ->
+            Messages.showErrorDialog(
+                project,
+                error.message ?: if (language == DisplayLanguage.ZH_CN) "获取 ChatGPT 额度失败。" else "Failed to fetch ChatGPT quota.",
+                if (language == DisplayLanguage.ZH_CN) "ChatGPT 额度" else "ChatGPT quota",
+            )
+        }
     }
 
     private fun renderStandaloneEntry(entry: TranscriptEntry) {
@@ -1589,8 +2387,10 @@ class IDopenToolWindowPanel(private val project: Project) {
 
         val actions = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
         actions.isOpaque = false
+        val viewDiff = if (entry.request.payload is ApprovalPayload.Patch) JButton(t("查看 Diff", "View Diff")) else null
         val approve = JButton("批准")
         val reject = JButton("拒绝")
+        viewDiff?.let(actions::add)
         actions.add(approve)
         actions.add(reject)
 
@@ -1601,7 +2401,9 @@ class IDopenToolWindowPanel(private val project: Project) {
 
             val expanded = detailsPanel.isVisible
             val pending = entry.request.status == ApprovalRequest.Status.PENDING
-            actions.isVisible = expanded && pending
+            actions.isVisible = expanded && (pending || viewDiff != null)
+            viewDiff?.isVisible = expanded
+            viewDiff?.isEnabled = expanded
             approve.isVisible = pending
             reject.isVisible = pending
             approve.isEnabled = pending
@@ -1639,6 +2441,11 @@ class IDopenToolWindowPanel(private val project: Project) {
             }
             entry.request.status = ApprovalRequest.Status.REJECTED
             refreshApprovalUi()
+        }
+
+        viewDiff?.addActionListener {
+            val payload = entry.request.payload as? ApprovalPayload.Patch ?: return@addActionListener
+            showPatchDiff(payload)
         }
 
         header.add(left, BorderLayout.WEST)
@@ -1716,6 +2523,20 @@ class IDopenToolWindowPanel(private val project: Project) {
             "IDopen 补丁审批",
             null,
         ) == Messages.YES
+    }
+
+    private fun showPatchDiff(payload: ApprovalPayload.Patch) {
+        val contentFactory = DiffContentFactory.getInstance()
+        val before = contentFactory.create(payload.beforeText)
+        val after = contentFactory.create(payload.afterText)
+        val request = SimpleDiffRequest(
+            payload.filePath,
+            before,
+            after,
+            t("修改前", "Before"),
+            t("修改后", "After"),
+        )
+        DiffManager.getInstance().showDiff(project, request)
     }
 
     private fun buildAttachments(): List<AttachmentContext> {
@@ -2211,10 +3032,18 @@ class IDopenToolWindowPanel(private val project: Project) {
     }
 
     private class PromptTextArea(
-        private val placeholder: String,
+        placeholder: String,
         rows: Int,
         columns: Int,
     ) : JBTextArea(rows, columns) {
+        private var placeholderText: String = placeholder
+
+        fun updatePlaceholder(value: String) {
+            if (placeholderText == value) return
+            placeholderText = value
+            repaint()
+        }
+
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
             if (text.isNotEmpty() || hasFocus()) return
@@ -2223,7 +3052,7 @@ class IDopenToolWindowPanel(private val project: Project) {
             g2.color = JBColor.GRAY
             g2.font = font.deriveFont(Font.PLAIN)
             val fm = g2.fontMetrics
-            g2.drawString(placeholder, insets.left + 2, insets.top + fm.ascent + 2)
+            g2.drawString(placeholderText, insets.left + 2, insets.top + fm.ascent + 2)
             g2.dispose()
         }
     }

@@ -1,5 +1,6 @@
 package com.idopen.idopen.agent
 
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
@@ -22,11 +23,152 @@ class IntelliJAgentTools(
     private val project: Project,
     private val shellSettings: () -> com.idopen.idopen.settings.IDopenSettingsState,
     private val approvalRequester: (ApprovalRequest) -> CompletableFuture<Boolean>,
+    private val todoReader: () -> List<SessionTodoItem> = { emptyList() },
+    private val todoWriter: (List<SessionTodoItem>) -> Unit = {},
+    private val mcpRuntime: McpRuntimeSupport = McpRuntimeSupport(),
 ) {
     private val mapper = ObjectMapper()
     private val projectRoot = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
 
     fun definitions(): List<ToolDefinition> = listOf(
+        ToolDefinition(
+            id = "mcp_list_servers",
+            description = McpSupport.toolDescription(projectRoot),
+            inputSchema = mapOf("type" to "object", "properties" to emptyMap<String, Any>()),
+        ),
+        ToolDefinition(
+            id = "mcp_describe_server",
+            description = "Describe one configured MCP server by name, including its scope, transport, command or URL, and visible keys.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("name"),
+                "properties" to mapOf(
+                    "name" to mapOf("type" to "string"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "mcp_list_tools",
+            description = "Connect to one supported MCP server and list the tools it exposes.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("server"),
+                "properties" to mapOf(
+                    "server" to mapOf("type" to "string"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "mcp_call_tool",
+            description = "Call one tool from a configured supported MCP server. Use mcp_list_tools first to confirm the exact tool name and schema.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("server", "tool"),
+                "properties" to mapOf(
+                    "server" to mapOf("type" to "string"),
+                    "tool" to mapOf("type" to "string"),
+                    "arguments" to mapOf("type" to "object"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "mcp_list_resources",
+            description = "Connect to one supported MCP server and list the resources it exposes.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("server"),
+                "properties" to mapOf(
+                    "server" to mapOf("type" to "string"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "mcp_read_resource",
+            description = "Read one listed resource from a configured supported MCP server. Use mcp_list_resources first to confirm the exact uri.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("server", "uri"),
+                "properties" to mapOf(
+                    "server" to mapOf("type" to "string"),
+                    "uri" to mapOf("type" to "string"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "mcp_list_resource_templates",
+            description = "Connect to one supported MCP server and list the parameterized resource templates it exposes.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("server"),
+                "properties" to mapOf(
+                    "server" to mapOf("type" to "string"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "mcp_list_prompts",
+            description = "Connect to one supported MCP server and list the prompts it exposes.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("server"),
+                "properties" to mapOf(
+                    "server" to mapOf("type" to "string"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "mcp_get_prompt",
+            description = "Load one prompt from a configured supported MCP server. Use mcp_list_prompts first to confirm the exact prompt name and arguments.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("server", "name"),
+                "properties" to mapOf(
+                    "server" to mapOf("type" to "string"),
+                    "name" to mapOf("type" to "string"),
+                    "arguments" to mapOf("type" to "object"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "skill",
+            description = SkillSupport.toolDescription(projectRoot),
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("name"),
+                "properties" to mapOf(
+                    "name" to mapOf("type" to "string"),
+                ),
+            ),
+        ),
+        ToolDefinition(
+            id = "todo_read",
+            description = "Read the current ordered todo list for this chat session.",
+            inputSchema = mapOf("type" to "object", "properties" to emptyMap<String, Any>()),
+        ),
+        ToolDefinition(
+            id = "todo_write",
+            description = "Replace the current ordered todo list for this chat session. Use statuses pending, in_progress, or completed.",
+            inputSchema = mapOf(
+                "type" to "object",
+                "required" to listOf("todos"),
+                "properties" to mapOf(
+                    "todos" to mapOf(
+                        "type" to "array",
+                        "items" to mapOf(
+                            "type" to "object",
+                            "required" to listOf("content", "status"),
+                            "properties" to mapOf(
+                                "content" to mapOf("type" to "string"),
+                                "status" to mapOf(
+                                    "type" to "string",
+                                    "enum" to listOf("pending", "in_progress", "completed"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
         ToolDefinition(
             id = "read_project_tree",
             description = "List files and directories in the current IntelliJ project.",
@@ -125,6 +267,32 @@ class IntelliJAgentTools(
     ): ToolExecutionResult {
         val args = mapper.readTree(call.argumentsJson)
         return when (call.name) {
+            "mcp_list_servers" -> listMcpServers(observer)
+            "mcp_describe_server" -> describeMcpServer(args.path("name").asText(""), observer)
+            "mcp_list_tools" -> listMcpTools(args.path("server").asText(""), observer)
+            "mcp_call_tool" -> callMcpTool(
+                serverName = args.path("server").asText(""),
+                toolName = args.path("tool").asText(""),
+                arguments = args.path("arguments").takeIf { it.isObject } ?: mapper.createObjectNode(),
+                observer = observer,
+            )
+            "mcp_list_resources" -> listMcpResources(args.path("server").asText(""), observer)
+            "mcp_read_resource" -> readMcpResource(
+                serverName = args.path("server").asText(""),
+                resourceUri = args.path("uri").asText(""),
+                observer = observer,
+            )
+            "mcp_list_resource_templates" -> listMcpResourceTemplates(args.path("server").asText(""), observer)
+            "mcp_list_prompts" -> listMcpPrompts(args.path("server").asText(""), observer)
+            "mcp_get_prompt" -> getMcpPrompt(
+                serverName = args.path("server").asText(""),
+                promptName = args.path("name").asText(""),
+                arguments = args.path("arguments").takeIf { it.isObject } ?: mapper.createObjectNode(),
+                observer = observer,
+            )
+            "skill" -> loadSkill(args.path("name").asText(""), observer)
+            "todo_read" -> readTodos(observer)
+            "todo_write" -> writeTodos(args.path("todos"), observer)
             "read_project_tree" -> readProjectTree(args.path("maxDepth").asInt(4), args.path("maxEntries").asInt(200), observer)
             "read_file" -> readFile(
                 path = args.path("path").asText(""),
@@ -151,6 +319,208 @@ class IntelliJAgentTools(
             )
             else -> ToolExecutionResult("未知工具：${call.name}", success = false)
         }
+    }
+
+    private fun listMcpServers(observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "List MCP servers",
+            ),
+        )
+        return McpSupport.listToolResult(projectRoot)
+    }
+
+    private fun describeMcpServer(name: String, observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "Describe MCP server",
+                metadata = mapOf("name" to name.ifBlank { "<empty>" }),
+            ),
+        )
+        return McpSupport.describeToolResult(projectRoot, name)
+    }
+
+    private fun listMcpTools(serverName: String, observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "List MCP tools",
+                metadata = mapOf("server" to serverName.ifBlank { "<empty>" }),
+            ),
+        )
+        return mcpRuntime.listTools(projectRoot, serverName)
+    }
+
+    private fun listMcpResources(serverName: String, observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "List MCP resources",
+                metadata = mapOf("server" to serverName.ifBlank { "<empty>" }),
+            ),
+        )
+        return mcpRuntime.listResources(projectRoot, serverName)
+    }
+
+    private fun readMcpResource(
+        serverName: String,
+        resourceUri: String,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "Read MCP resource",
+                metadata = mapOf(
+                    "server" to serverName.ifBlank { "<empty>" },
+                    "uri" to resourceUri.ifBlank { "<empty>" },
+                ),
+            ),
+        )
+        return mcpRuntime.readResource(projectRoot, serverName, resourceUri)
+    }
+
+    private fun listMcpResourceTemplates(serverName: String, observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "List MCP resource templates",
+                metadata = mapOf("server" to serverName.ifBlank { "<empty>" }),
+            ),
+        )
+        return mcpRuntime.listResourceTemplates(projectRoot, serverName)
+    }
+
+    private fun listMcpPrompts(serverName: String, observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "List MCP prompts",
+                metadata = mapOf("server" to serverName.ifBlank { "<empty>" }),
+            ),
+        )
+        return mcpRuntime.listPrompts(projectRoot, serverName)
+    }
+
+    private fun getMcpPrompt(
+        serverName: String,
+        promptName: String,
+        arguments: JsonNode,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "Get MCP prompt",
+                metadata = mapOf(
+                    "server" to serverName.ifBlank { "<empty>" },
+                    "name" to promptName.ifBlank { "<empty>" },
+                ),
+            ),
+        )
+        return mcpRuntime.getPrompt(projectRoot, serverName, promptName, arguments)
+    }
+
+    private fun callMcpTool(
+        serverName: String,
+        toolName: String,
+        arguments: JsonNode,
+        observer: ToolExecutionObserver,
+    ): ToolExecutionResult {
+        if (serverName.isBlank()) {
+            return ToolExecutionResult(
+                content = "Missing MCP server name parameter.",
+                success = false,
+                recoveryHint = "Use mcp_list_servers first, then retry with one exact configured server name.",
+            )
+        }
+        if (toolName.isBlank()) {
+            return ToolExecutionResult(
+                content = "Missing MCP tool name parameter.",
+                success = false,
+                recoveryHint = "Use mcp_list_tools first, then retry with one exact MCP tool name.",
+            )
+        }
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.PENDING,
+                title = "Approve MCP tool call",
+                metadata = mapOf(
+                    "server" to serverName,
+                    "tool" to toolName,
+                ),
+            ),
+        )
+        val request = ApprovalRequest(
+            id = "approval-${System.nanoTime()}",
+            type = ApprovalRequest.Type.COMMAND,
+            title = "Invoke MCP tool $toolName on $serverName",
+            payload = ApprovalPayload.Command(
+                command = "mcp tools/call server=$serverName tool=$toolName arguments=${truncate(arguments.toString(), 600)}",
+                workingDirectory = projectRoot.toString(),
+            ),
+        )
+        val approved = approvalRequester(request).get()
+        if (!approved) {
+            return ToolExecutionResult(
+                content = "The MCP tool call was rejected by the user.",
+                success = false,
+                recoveryHint = FailureRecoverySupport.approvalHint(request),
+            )
+        }
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "Call MCP tool",
+                metadata = mapOf(
+                    "server" to serverName,
+                    "tool" to toolName,
+                ),
+            ),
+        )
+        return mcpRuntime.callTool(projectRoot, serverName, toolName, arguments)
+    }
+
+    private fun loadSkill(name: String, observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "Load skill",
+                metadata = mapOf("name" to name.ifBlank { "<empty>" }),
+            ),
+        )
+        return SkillSupport.loadToolResult(projectRoot, name)
+    }
+
+    private fun readTodos(observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "读取任务列表",
+            ),
+        )
+        return ToolExecutionResult(SessionTodoSupport.formatForTool(todoReader()))
+    }
+
+    private fun writeTodos(todosNode: JsonNode, observer: ToolExecutionObserver): ToolExecutionResult {
+        observer.onUpdate(
+            ToolProgressUpdate(
+                state = ToolInvocationState.RUNNING,
+                title = "更新任务列表",
+            ),
+        )
+        val todos = SessionTodoSupport.parseTodos(todosNode)
+        SessionTodoSupport.validateTodos(todos)?.let { validationError ->
+            return ToolExecutionResult(
+                content = validationError,
+                success = false,
+                recoveryHint = "Keep the todo list short and ordered, with at most one in_progress item.",
+            )
+        }
+        todoWriter(todos)
+        return ToolExecutionResult(SessionTodoSupport.summary(todos))
     }
 
     private fun readProjectTree(

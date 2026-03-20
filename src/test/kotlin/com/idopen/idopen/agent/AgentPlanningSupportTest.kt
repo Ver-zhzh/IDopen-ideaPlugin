@@ -13,6 +13,7 @@ class AgentPlanningSupportTest {
             title = "test",
             updatedAt = Instant.parse("2026-03-14T08:00:00Z"),
             running = false,
+            todos = emptyList(),
             transcript = emptyList(),
             stepGroups = emptyList(),
             steps = emptyList(),
@@ -21,8 +22,10 @@ class AgentPlanningSupportTest {
         val plan = AgentPlanningSupport.buildPlan(
             snapshot = snapshot,
             roundId = "round-1",
-            userRequest = "搜索这个调用链，然后修复这个 bug，并运行测试",
+            userRequest = "Search the project, fix the bug, and run the tests",
             availableTools = listOf(
+                ToolDefinition("todo_read", "", emptyMap()),
+                ToolDefinition("todo_write", "", emptyMap()),
                 ToolDefinition("search_text", "", emptyMap()),
                 ToolDefinition("read_file", "", emptyMap()),
                 ToolDefinition("apply_patch_preview", "", emptyMap()),
@@ -37,6 +40,7 @@ class AgentPlanningSupportTest {
         )
 
         assertTrue(plan.subtasks.isNotEmpty())
+        assertTrue(plan.recommendedTools.contains("todo_write"))
         assertTrue(plan.recommendedTools.contains("search_text"))
         assertTrue(plan.recommendedTools.contains("apply_patch_preview"))
         assertTrue(plan.recommendedTools.contains("run_command"))
@@ -73,6 +77,7 @@ class AgentPlanningSupportTest {
             title = "test",
             updatedAt = Instant.parse("2026-03-14T08:00:03Z"),
             running = false,
+            todos = emptyList(),
             transcript = emptyList(),
             stepGroups = emptyList(),
             steps = listOf(failedStep),
@@ -93,5 +98,117 @@ class AgentPlanningSupportTest {
 
         assertEquals(true, plan.recoveryHint?.contains("suggests"))
         assertEquals(true, plan.recoveryHint?.contains("project tree"))
+    }
+
+    @Test
+    fun `plan recommends skill tool for workflow oriented requests`() {
+        val snapshot = ChatSessionSnapshot(
+            sessionId = "session-1",
+            title = "test",
+            updatedAt = Instant.parse("2026-03-14T08:00:00Z"),
+            running = false,
+            todos = emptyList(),
+            transcript = emptyList(),
+            stepGroups = emptyList(),
+            steps = emptyList(),
+        )
+
+        val plan = AgentPlanningSupport.buildPlan(
+            snapshot = snapshot,
+            roundId = "round-2",
+            userRequest = "Follow the release workflow and use the right skill before editing files",
+            availableTools = listOf(
+                ToolDefinition("skill", "", emptyMap()),
+                ToolDefinition("read_file", "", emptyMap()),
+            ),
+            runtimeProfile = ProviderRuntimeProfile(
+                config = ProviderConfig(ProviderType.OPENAI_COMPATIBLE, "https://example.com/v1", "key", "qwen", emptyMap()),
+                supportsToolCalling = true,
+                effectiveToolMode = ToolCallingMode.ENABLED,
+                includeTools = true,
+            ),
+        )
+
+        assertTrue(plan.recommendedTools.contains("skill"))
+        assertTrue(plan.planningNotes.any { it.contains("project skills") })
+    }
+
+    @Test
+    fun `plan recommends MCP inspection for browser and docs requests`() {
+        val snapshot = ChatSessionSnapshot(
+            sessionId = "session-1",
+            title = "test",
+            updatedAt = Instant.parse("2026-03-14T08:00:00Z"),
+            running = false,
+            todos = emptyList(),
+            transcript = emptyList(),
+            stepGroups = emptyList(),
+            steps = emptyList(),
+        )
+
+        val plan = AgentPlanningSupport.buildPlan(
+            snapshot = snapshot,
+            roundId = "round-3",
+            userRequest = "Use playwright MCP to inspect the docs site before making changes",
+            availableTools = listOf(
+                ToolDefinition("mcp_list_servers", "", emptyMap()),
+                ToolDefinition("mcp_describe_server", "", emptyMap()),
+                ToolDefinition("mcp_list_tools", "", emptyMap()),
+                ToolDefinition("read_file", "", emptyMap()),
+            ),
+            runtimeProfile = ProviderRuntimeProfile(
+                config = ProviderConfig(ProviderType.OPENAI_COMPATIBLE, "https://example.com/v1", "key", "qwen", emptyMap()),
+                supportsToolCalling = true,
+                effectiveToolMode = ToolCallingMode.ENABLED,
+                includeTools = true,
+            ),
+        )
+
+        assertTrue(plan.recommendedTools.contains("mcp_list_servers"))
+        assertTrue(plan.recommendedTools.contains("mcp_describe_server"))
+        assertTrue(plan.recommendedTools.contains("mcp_list_tools"))
+        assertTrue(plan.planningNotes.any { it.contains("MCP servers") })
+        assertTrue(plan.planningNotes.any { it.contains("supported MCP server") })
+    }
+
+    @Test
+    fun `plan recommends MCP resources and prompts for template driven context requests`() {
+        val snapshot = ChatSessionSnapshot(
+            sessionId = "session-1",
+            title = "test",
+            updatedAt = Instant.parse("2026-03-14T08:00:00Z"),
+            running = false,
+            todos = emptyList(),
+            transcript = emptyList(),
+            stepGroups = emptyList(),
+            steps = emptyList(),
+        )
+
+        val plan = AgentPlanningSupport.buildPlan(
+            snapshot = snapshot,
+            roundId = "round-4",
+            userRequest = "Use MCP prompt templates and docs resources as context before editing",
+            availableTools = listOf(
+                ToolDefinition("mcp_list_resources", "", emptyMap()),
+                ToolDefinition("mcp_read_resource", "", emptyMap()),
+                ToolDefinition("mcp_list_resource_templates", "", emptyMap()),
+                ToolDefinition("mcp_list_prompts", "", emptyMap()),
+                ToolDefinition("mcp_get_prompt", "", emptyMap()),
+            ),
+            runtimeProfile = ProviderRuntimeProfile(
+                config = ProviderConfig(ProviderType.OPENAI_COMPATIBLE, "https://example.com/v1", "key", "qwen", emptyMap()),
+                supportsToolCalling = true,
+                effectiveToolMode = ToolCallingMode.ENABLED,
+                includeTools = true,
+            ),
+        )
+
+        assertTrue(plan.recommendedTools.contains("mcp_list_resources"))
+        assertTrue(plan.recommendedTools.contains("mcp_read_resource"))
+        assertTrue(plan.recommendedTools.contains("mcp_list_resource_templates"))
+        assertTrue(plan.recommendedTools.contains("mcp_list_prompts"))
+        assertTrue(plan.recommendedTools.contains("mcp_get_prompt"))
+        assertTrue(plan.planningNotes.any { it.contains("reference context") })
+        assertTrue(plan.planningNotes.any { it.contains("prompt templates") })
     }
 }

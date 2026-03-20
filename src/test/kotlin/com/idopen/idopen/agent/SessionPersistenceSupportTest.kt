@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class SessionPersistenceSupportTest {
     @Test
@@ -14,6 +15,10 @@ class SessionPersistenceSupportTest {
             PersistedSessionState(
                 id = "session-7",
                 title = "查看项目",
+                todos = listOf(
+                    SessionTodoItem("Inspect project structure", SessionTodoStatus.IN_PROGRESS),
+                    SessionTodoItem("Summarize findings", SessionTodoStatus.PENDING),
+                ),
                 transcript = listOf(
                     TranscriptEntry.System("system-1", "ready", now),
                     TranscriptEntry.User("user-2", "你好", now, "round-1"),
@@ -61,6 +66,7 @@ class SessionPersistenceSupportTest {
                 ),
                 updatedAt = now,
                 lastCapabilityNotice = "fallback",
+                activeProjectAgent = "review/security",
             ),
         )
 
@@ -70,7 +76,10 @@ class SessionPersistenceSupportTest {
         assertEquals("session-7", decoded.activeSessionId)
         assertEquals(1, decoded.sessions.size)
         assertEquals("查看项目", decoded.sessions.first().title)
+        assertEquals(2, decoded.sessions.first().todos.size)
+        assertEquals(SessionTodoStatus.IN_PROGRESS, decoded.sessions.first().todos.first().status)
         assertEquals("fallback", decoded.sessions.first().lastCapabilityNotice)
+        assertEquals("review/security", decoded.sessions.first().activeProjectAgent)
         assertIs<TranscriptEntry.StepStart>(decoded.sessions.first().transcript[2])
         assertIs<TranscriptEntry.Assistant>(decoded.sessions.first().transcript[3])
         assertEquals("round-1", decoded.sessions.first().transcript[3].roundId)
@@ -104,6 +113,7 @@ class SessionPersistenceSupportTest {
                 PersistedSessionState(
                     id = "session-2",
                     title = "a",
+                    todos = emptyList(),
                     transcript = listOf(
                         TranscriptEntry.System("system-4", "ready"),
                         TranscriptEntry.User("user-12", "hello"),
@@ -167,6 +177,7 @@ class SessionPersistenceSupportTest {
                     PersistedSessionState(
                         id = "session-1",
                         title = "parts",
+                        todos = listOf(SessionTodoItem("Preserve reasoning trace", SessionTodoStatus.PENDING)),
                         transcript = listOf(
                             TranscriptEntry.Assistant(
                                 id = "assistant-1",
@@ -185,6 +196,7 @@ class SessionPersistenceSupportTest {
                                 content = "summary",
                                 roundId = "round-1",
                                 outputParts = listOf(AssistantOutputPart.Text("summary")),
+                                responseItems = listOf("""{"type":"reasoning","id":"rs_1","summary":[]}"""),
                             ),
                         ),
                         updatedAt = now,
@@ -198,5 +210,7 @@ class SessionPersistenceSupportTest {
         assertIs<AssistantOutputPart.CodeBlock>(assistantEntry.outputParts.last())
         val assistantHistory = assertIs<ConversationMessage.Assistant>(restored.sessions.first().history.last())
         assertEquals(1, assistantHistory.outputParts.size)
+        assertEquals(1, assistantHistory.responseItems.size)
+        assertTrue(assistantHistory.responseItems.first().contains("\"type\":\"reasoning\""))
     }
 }

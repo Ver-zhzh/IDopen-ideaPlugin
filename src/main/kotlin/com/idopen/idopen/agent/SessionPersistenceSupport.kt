@@ -8,10 +8,12 @@ import java.time.Instant
 data class PersistedSessionState(
     val id: String,
     val title: String,
+    val todos: List<SessionTodoItem>,
     val transcript: List<TranscriptEntry>,
     val history: List<ConversationMessage>,
     val updatedAt: Instant,
     val lastCapabilityNotice: String? = null,
+    val activeProjectAgent: String? = null,
 )
 
 data class RestoredSessions(
@@ -59,6 +61,10 @@ object SessionPersistenceSupport {
             put("title", session.title)
             put("updatedAt", session.updatedAt.toEpochMilli())
             session.lastCapabilityNotice?.let { put("lastCapabilityNotice", it) }
+            session.activeProjectAgent?.let { put("activeProjectAgent", it) }
+            putArray("todos").apply {
+                session.todos.forEach { add(serializeTodoItem(it)) }
+            }
             putArray("transcript").apply {
                 session.transcript.forEach { add(serializeTranscriptEntry(it)) }
             }
@@ -69,15 +75,18 @@ object SessionPersistenceSupport {
     }
 
     private fun deserializeSession(node: JsonNode): PersistedSessionState {
+        val todos = node.path("todos").takeIf { it.isArray }?.map(::deserializeTodoItem).orEmpty()
         val transcript = node.path("transcript").takeIf { it.isArray }?.map(::deserializeTranscriptEntry).orEmpty()
         val history = node.path("history").takeIf { it.isArray }?.map(::deserializeConversationMessage).orEmpty()
         return PersistedSessionState(
             id = node.path("id").asText(),
             title = node.path("title").asText("新对话"),
+            todos = todos,
             transcript = transcript,
             history = history,
             updatedAt = Instant.ofEpochMilli(node.path("updatedAt").asLong(Instant.now().toEpochMilli())),
             lastCapabilityNotice = node.path("lastCapabilityNotice").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+            activeProjectAgent = node.path("activeProjectAgent").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
         )
     }
 
@@ -272,6 +281,11 @@ object SessionPersistenceSupport {
                     putArray("toolCalls").apply {
                         message.toolCalls.forEach { add(serializeToolCall(it)) }
                     }
+                    if (message.responseItems.isNotEmpty()) {
+                        putArray("responseItems").apply {
+                            message.responseItems.forEach(::add)
+                        }
+                    }
                 }
                 is ConversationMessage.Tool -> {
                     put("kind", "tool")
@@ -293,6 +307,7 @@ object SessionPersistenceSupport {
                 content = node.path("content").asText(),
                 toolCalls = node.path("toolCalls").takeIf { it.isArray }?.map(::deserializeToolCall).orEmpty(),
                 outputParts = node.path("outputParts").takeIf { it.isArray }?.map(::deserializeAssistantOutputPart).orEmpty(),
+                responseItems = node.path("responseItems").takeIf { it.isArray }?.map { it.asText() }.orEmpty(),
                 roundId = roundId,
             )
             else -> ConversationMessage.Tool(
@@ -341,6 +356,20 @@ object SessionPersistenceSupport {
                 }
             }
         }
+    }
+
+    private fun serializeTodoItem(item: SessionTodoItem): ObjectNode {
+        return mapper.createObjectNode().apply {
+            put("content", item.content)
+            put("status", item.status.wireValue())
+        }
+    }
+
+    private fun deserializeTodoItem(node: JsonNode): SessionTodoItem {
+        return SessionTodoItem(
+            content = node.path("content").asText(),
+            status = SessionTodoStatus.fromStored(node.path("status").asText()) ?: SessionTodoStatus.PENDING,
+        )
     }
 
     private fun deserializeAssistantOutputPart(node: JsonNode): AssistantOutputPart {

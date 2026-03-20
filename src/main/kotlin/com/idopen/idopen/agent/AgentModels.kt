@@ -5,6 +5,14 @@ import java.time.Instant
 
 enum class ProviderType {
     OPENAI_COMPATIBLE,
+    CHATGPT_AUTH,
+    ;
+
+    companion object {
+        fun fromStored(value: String?): ProviderType {
+            return entries.firstOrNull { it.name == value } ?: OPENAI_COMPATIBLE
+        }
+    }
 }
 
 enum class ToolCallingMode {
@@ -32,6 +40,9 @@ data class ProviderConfig(
     val apiKey: String,
     val model: String,
     val headers: Map<String, String>,
+    val refreshToken: String? = null,
+    val accessTokenExpiresAt: Long? = null,
+    val accountId: String? = null,
 )
 
 data class AttachmentContext(
@@ -63,12 +74,50 @@ data class ToolCapability(
     val detail: String? = null,
 )
 
+enum class SessionTodoStatus {
+    PENDING,
+    IN_PROGRESS,
+    COMPLETED,
+    ;
+
+    companion object {
+        fun fromStored(value: String?): SessionTodoStatus? {
+            return when (value?.trim()?.lowercase()) {
+                "pending" -> PENDING
+                "in_progress", "in-progress", "active", "doing" -> IN_PROGRESS
+                "completed", "done" -> COMPLETED
+                else -> null
+            }
+        }
+    }
+
+    fun wireValue(): String {
+        return when (this) {
+            PENDING -> "pending"
+            IN_PROGRESS -> "in_progress"
+            COMPLETED -> "completed"
+        }
+    }
+}
+
+data class SessionTodoItem(
+    val content: String,
+    val status: SessionTodoStatus = SessionTodoStatus.PENDING,
+)
+
+data class TurnExecutionOptions(
+    val systemPromptOverride: String? = null,
+    val modelOverride: String? = null,
+    val sourceLabel: String? = null,
+)
+
 data class ChatSessionSummary(
     val id: String,
     val title: String,
     val updatedAt: Instant,
     val entryCount: Int,
     val running: Boolean,
+    val activeAgentName: String? = null,
 )
 
 data class ChatSessionSnapshot(
@@ -76,9 +125,11 @@ data class ChatSessionSnapshot(
     val title: String,
     val updatedAt: Instant,
     val running: Boolean,
+    val todos: List<SessionTodoItem>,
     val transcript: List<TranscriptEntry>,
     val stepGroups: List<SessionStepGroup>,
     val steps: List<SessionStep>,
+    val activeAgentName: String? = null,
 )
 
 data class PatchEdit(
@@ -111,12 +162,13 @@ sealed interface ConversationMessage {
         val toolCalls: List<ToolCall> = emptyList(),
         override val roundId: String? = null,
         val outputParts: List<AssistantOutputPart> = emptyList(),
+        val responseItems: List<String> = emptyList(),
     ) : ConversationMessage {
         constructor(
             content: String,
             toolCalls: List<ToolCall>,
             roundId: String?,
-        ) : this(content, toolCalls, roundId, emptyList())
+        ) : this(content, toolCalls, roundId, emptyList(), emptyList())
 
         @Suppress("UNUSED_PARAMETER")
         constructor(
@@ -125,7 +177,7 @@ sealed interface ConversationMessage {
             roundId: String?,
             mask: Int,
             marker: kotlin.jvm.internal.DefaultConstructorMarker?,
-        ) : this(content, toolCalls, roundId, emptyList())
+        ) : this(content, toolCalls, roundId, emptyList(), emptyList())
     }
 
     data class Tool(

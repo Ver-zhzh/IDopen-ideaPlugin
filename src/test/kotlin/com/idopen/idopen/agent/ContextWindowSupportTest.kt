@@ -146,4 +146,65 @@ class ContextWindowSupportTest {
             },
         )
     }
+
+    @Test
+    fun `compact keeps the full latest round for tool continuation`() {
+        val messages = buildList {
+            add(ConversationMessage.System("base"))
+            repeat(18) { index ->
+                add(ConversationMessage.User("older user $index " + "x".repeat(220), "round-$index"))
+                add(ConversationMessage.Assistant("older assistant $index " + "y".repeat(220), roundId = "round-$index"))
+            }
+            repeat(6) { index ->
+                add(ConversationMessage.User("active user $index", "round-active"))
+                add(
+                    ConversationMessage.Assistant(
+                        content = "active assistant $index",
+                        toolCalls = listOf(ToolCall("call-$index", "search_text", """{"query":"$index"}""")),
+                        roundId = "round-active",
+                    ),
+                )
+                add(ConversationMessage.Tool("call-$index", "search_text", "active output $index", "round-active"))
+            }
+        }
+
+        val compacted = ContextWindowSupport.compact(messages)
+        val activeRoundMessages = compacted.filter { it.roundId == "round-active" }
+
+        assertEquals(18, activeRoundMessages.size)
+        assertTrue(activeRoundMessages.none { it is ConversationMessage.System })
+        assertEquals("active user 0", (activeRoundMessages.first() as ConversationMessage.User).content)
+        assertEquals("active output 5", (activeRoundMessages.last() as ConversationMessage.Tool).content)
+    }
+
+    @Test
+    fun `compact expands partially selected rounds to keep tool call pairs intact`() {
+        val messages = buildList {
+            add(ConversationMessage.System("base"))
+            repeat(12) { index ->
+                add(ConversationMessage.User("user $index " + "x".repeat(180), "round-$index"))
+                add(
+                    ConversationMessage.Assistant(
+                        content = "assistant $index",
+                        toolCalls = listOf(ToolCall("call-$index", "read_file", """{"path":"file$index.txt"}""")),
+                        roundId = "round-$index",
+                    ),
+                )
+                add(ConversationMessage.Tool("call-$index", "read_file", "output $index " + "y".repeat(180), "round-$index"))
+            }
+        }
+
+        val compacted = ContextWindowSupport.compact(messages)
+        val rounds = compacted.mapNotNull { it.roundId }.toSet()
+
+        rounds.forEach { roundId ->
+            val toolMessages = compacted.filterIsInstance<ConversationMessage.Tool>().filter { it.roundId == roundId }
+            toolMessages.forEach { tool ->
+                val assistant = compacted
+                    .filterIsInstance<ConversationMessage.Assistant>()
+                    .firstOrNull { it.roundId == roundId && it.toolCalls.any { call -> call.id == tool.toolCallId } }
+                assertTrue(assistant != null, "Missing tool call context for $roundId/${tool.toolCallId}")
+            }
+        }
+    }
 }

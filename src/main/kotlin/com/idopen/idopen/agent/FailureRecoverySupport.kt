@@ -8,6 +8,18 @@ object FailureRecoverySupport {
     ): String? {
         val compactFailure = failureText.replace(Regex("\\s+"), " ").trim().take(220)
         return when (toolName) {
+            "mcp_list_servers" -> "The previous mcp_list_servers call failed. Re-check whether the project has .mcp.json or .claude/.mcp.json configuration before retrying. Failure: $compactFailure"
+            "mcp_describe_server" -> "The previous mcp_describe_server call failed. Use mcp_list_servers first, then retry with one exact server name. Failure: $compactFailure"
+            "mcp_list_tools" -> "The previous mcp_list_tools call failed. Confirm the server uses a supported transport, then retry with one exact server name from mcp_list_servers. Failure: $compactFailure"
+            "mcp_call_tool" -> "The previous mcp_call_tool call failed. Re-run mcp_list_tools, verify the exact tool name and schema, and narrow the arguments before retrying. Failure: $compactFailure"
+            "mcp_list_resources" -> "The previous mcp_list_resources call failed. Confirm the server uses a supported transport, then retry with one exact server name from mcp_list_servers. Failure: $compactFailure"
+            "mcp_read_resource" -> "The previous mcp_read_resource call failed. Re-run mcp_list_resources, verify the exact resource uri, and retry with one listed resource only. Failure: $compactFailure"
+            "mcp_list_resource_templates" -> "The previous mcp_list_resource_templates call failed. Confirm the server uses a supported transport, then retry with one exact server name from mcp_list_servers. Failure: $compactFailure"
+            "mcp_list_prompts" -> "The previous mcp_list_prompts call failed. Confirm the server uses a supported transport, then retry with one exact server name from mcp_list_servers. Failure: $compactFailure"
+            "mcp_get_prompt" -> "The previous mcp_get_prompt call failed. Re-run mcp_list_prompts, verify the exact prompt name and required arguments, and narrow the arguments before retrying. Failure: $compactFailure"
+            "skill" -> "The previous skill call failed. Retry with an exact skill name from the available skills list instead of guessing. Failure: $compactFailure"
+            "todo_read" -> "The previous todo_read call failed. Retry without extra arguments and keep reading the current session todo list only. Failure: $compactFailure"
+            "todo_write" -> "The previous todo_write call failed. Rewrite the full ordered todo list, keep items short, and leave at most one item in_progress. Failure: $compactFailure"
             "read_file" -> "The previous read_file call failed. Re-check the path, then use read_project_tree or search_text before trying the same read again. Failure: $compactFailure"
             "search_text" -> "The previous search_text call failed. Narrow the query or read the current file first before searching again. Failure: $compactFailure"
             "run_command" -> "The previous run_command call failed. Prefer read-only commands, verify the working directory, and avoid repeating the same command unchanged. Failure: $compactFailure"

@@ -1,5 +1,6 @@
 package com.idopen.idopen.agent
 
+import com.idopen.idopen.settings.DisplayLanguage
 import com.idopen.idopen.settings.IDopenSettingsState
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
@@ -28,7 +29,13 @@ class AgentSessionService(private val project: Project) {
     private val capabilityCache = ConcurrentHashMap<String, ToolCapability>()
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val idCounter = AtomicInteger()
-    private val tools = IntelliJAgentTools(project, { IDopenSettingsState.getInstance() }, ::requestApproval)
+    private val tools = IntelliJAgentTools(
+        project = project,
+        shellSettings = { IDopenSettingsState.getInstance() },
+        approvalRequester = ::requestApproval,
+        todoReader = ::currentTodoItems,
+        todoWriter = ::replaceTodoItems,
+    )
     private val sessions = linkedMapOf<String, SessionState>()
 
     @Volatile
@@ -51,13 +58,16 @@ class AgentSessionService(private val project: Project) {
                 sessions[persisted.id] = SessionState(
                     id = persisted.id,
                     title = persisted.title,
+                    todos = persisted.todos.toMutableList(),
                     transcript = persisted.transcript.toMutableList(),
                     stepGroups = stepGroups,
                     steps = SessionStepSupport.buildSteps(stepGroups),
                     history = persisted.history.toMutableList(),
                     updatedAt = persisted.updatedAt,
                     lastCapabilityNotice = persisted.lastCapabilityNotice,
+                    activeProjectAgent = normalizeProjectAgentName(persisted.activeProjectAgent),
                 )
+                syncSessionSystemPrompt(sessions.getValue(persisted.id))
             }
             activeSessionId = restored.activeSessionId.takeIf { sessions.containsKey(it) }
                 ?: restored.sessions.first().id
@@ -71,7 +81,11 @@ class AgentSessionService(private val project: Project) {
         emitSnapshotChanged(currentSession())
     }
 
-    fun sendUserMessage(text: String, attachments: List<AttachmentContext> = emptyList()) {
+    fun sendUserMessage(
+        text: String,
+        attachments: List<AttachmentContext> = emptyList(),
+        turnOptions: TurnExecutionOptions = TurnExecutionOptions(),
+    ) {
         if (text.isBlank()) return
         if (isRunning()) {
             emitFailure(currentSession(), "当前已有任务在运行，请先停止后再发送新消息。")
@@ -86,6 +100,19 @@ class AgentSessionService(private val project: Project) {
         SessionTitleSupport.pickTitle(session.title, DEFAULT_SESSION_TITLE, userText)?.let { title ->
             session.title = title
             persistSessions()
+        }
+
+        normalizeTurnOptions(turnOptions)?.let { normalized ->
+            session.turnOverrides[roundId] = normalized
+            buildTurnOverrideNotice(normalized)?.let { notice ->
+                val noticeEntry = TranscriptEntry.System(
+                    id = nextId("system"),
+                    message = notice,
+                    roundId = roundId,
+                )
+                appendEntry(session, noticeEntry)
+                emitEntryAdded(session, noticeEntry)
+            }
         }
 
         if (attachments.isNotEmpty()) {
@@ -151,6 +178,7 @@ class AgentSessionService(private val project: Project) {
                 updatedAt = session.updatedAt,
                 entryCount = session.transcript.size,
                 running = currentRunSessionId == session.id && isRunning(),
+                activeAgentName = session.activeProjectAgent,
             )
         }
     }
@@ -165,11 +193,70 @@ class AgentSessionService(private val project: Project) {
         return session.id
     }
 
+    fun deleteSession(sessionId: String): Boolean {
+        if (isRunning()) return false
+        val removed = sessions.remove(sessionId) ?: return false
+        pendingApprovals.entries.removeIf { it.value.sessionId == removed.id }
+
+        if (sessions.isEmpty()) {
+            val replacement = createSessionInternal(DEFAULT_SESSION_TITLE)
+            activeSessionId = replacement.id
+        } else if (activeSessionId == removed.id) {
+            activeSessionId = sessions.values.maxByOrNull { it.updatedAt }?.id ?: sessions.keys.first()
+        }
+
+        emitSessionsChanged()
+        return true
+    }
+
     fun selectSession(sessionId: String) {
         if (isRunning()) return
         if (!sessions.containsKey(sessionId) || activeSessionId == sessionId) return
         activeSessionId = sessionId
         emitSessionsChanged()
+    }
+
+    fun activateProjectAgent(name: String): LoadedProjectAgent? {
+        if (isRunning()) return null
+        val agent = ProjectAgentSupport.find(projectRoot(), name) ?: return null
+        val session = currentSession()
+        val changed = session.activeProjectAgent != agent.name
+        session.activeProjectAgent = agent.name
+        syncSessionSystemPrompt(session)
+        if (changed) {
+            appendEntry(
+                session,
+                TranscriptEntry.System(
+                    id = nextId("system"),
+                    message = projectAgentActivatedMessage(agent),
+                ),
+            )
+            emitEntryAdded(session, session.transcript.last())
+        } else {
+            session.updatedAt = Instant.now()
+            persistSessions()
+            emitSnapshotChanged(session)
+        }
+        emit(SessionEvent.SessionsChanged(getSessions(), activeSessionId))
+        return agent
+    }
+
+    fun clearActiveProjectAgent(): String? {
+        if (isRunning()) return null
+        val session = currentSession()
+        val previous = session.activeProjectAgent ?: return ""
+        session.activeProjectAgent = null
+        syncSessionSystemPrompt(session)
+        appendEntry(
+            session,
+            TranscriptEntry.System(
+                id = nextId("system"),
+                message = projectAgentClearedMessage(previous),
+            ),
+        )
+        emitEntryAdded(session, session.transcript.last())
+        emit(SessionEvent.SessionsChanged(getSessions(), activeSessionId))
+        return previous
     }
 
     fun isRunning(): Boolean = currentRun?.isDone == false
@@ -180,12 +267,16 @@ class AgentSessionService(private val project: Project) {
         currentRun = executor.submit {
             emit(SessionEvent.RunStateChanged(true))
             emitSessionsChanged()
-            runCatching { agentLoop(sessionId, roundId) }
+            try {
+                runCatching { agentLoop(sessionId, roundId) }
                 .onFailure { emitFailure(session(sessionId), it.message ?: "未知错误", roundId) }
-            emit(SessionEvent.RunStateChanged(false))
-            currentRunSessionId = null
-            currentRunRoundId = null
-            emitSessionsChanged()
+            } finally {
+                session(sessionId)?.turnOverrides?.remove(roundId)
+                emit(SessionEvent.RunStateChanged(false))
+                currentRunSessionId = null
+                currentRunRoundId = null
+                emitSessionsChanged()
+            }
         }
     }
 
@@ -200,7 +291,8 @@ class AgentSessionService(private val project: Project) {
         }
 
         val config = provider.config ?: return
-        val runtimeProfile = resolveRuntimeProfile(session, config, settings, roundId)
+        val effectiveConfig = effectiveProviderConfig(session, config, roundId)
+        val runtimeProfile = resolveRuntimeProfile(session, effectiveConfig, settings, roundId)
         val toolDefinitions = if (runtimeProfile.includeTools) tools.definitions() else emptyList()
         var totalToolCalls = 0
 
@@ -227,13 +319,14 @@ class AgentSessionService(private val project: Project) {
             )
             val result = client.streamChat(
                 OpenAICompatibleClient.ChatRequest(
-                    providerConfig = config,
+                    providerConfig = effectiveConfig,
                     messages = buildTurnMessages(
                         session = session,
                         roundId = roundId,
                         turnPlan = turnPlan,
                     ),
                     tools = toolDefinitions,
+                    sessionId = session.id,
                 ),
             ) { delta ->
                 val entry = assistantEntry ?: TranscriptEntry.Assistant(
@@ -248,11 +341,8 @@ class AgentSessionService(private val project: Project) {
                 }
                 entry.text = delta.snapshot
                 entry.outputParts = delta.outputParts
-                session.steps = SessionStepSupport.buildSteps(session.stepGroups)
                 session.updatedAt = Instant.now()
-                persistSessions()
                 emit(SessionEvent.MessageDelta(entry.id, delta.delta, entry.text, entry.outputParts))
-                emitSnapshotChanged(session)
             }
 
             if (assistantEntry == null && result.text.isNotBlank()) {
@@ -273,6 +363,7 @@ class AgentSessionService(private val project: Project) {
                 content = result.text,
                 toolCalls = result.toolCalls,
                 outputParts = result.outputParts,
+                responseItems = result.responseItems,
                 roundId = roundId,
             )
             persistSessions()
@@ -544,19 +635,40 @@ class AgentSessionService(private val project: Project) {
     }
 
     private fun createSessionInternal(title: String): SessionState {
+        val settings = IDopenSettingsState.getInstance()
+        val language = DisplayLanguage.fromStored(settings.displayLanguage)
+        val providerDefinition = ProviderDefinitionSupport.definition(ProviderType.fromStored(settings.providerType))
+        val welcomeMessage = if (providerDefinition.isReady(settings)) {
+            if (language == DisplayLanguage.ZH_CN) {
+                "IDopen 已就绪。直接发送你的需求即可开始。"
+            } else {
+                "IDopen is ready. Send your request to start."
+            }
+        } else {
+            if (language == DisplayLanguage.ZH_CN) {
+                "IDopen 已就绪。${providerDefinition.setupHint(language)}"
+            } else {
+                "IDopen is ready. ${providerDefinition.setupHint(language)}"
+            }
+        }
         val session = SessionState(
             id = nextId("session"),
             title = title,
+            todos = mutableListOf(),
             transcript = mutableListOf(),
             stepGroups = emptyList(),
             steps = emptyList(),
             history = mutableListOf(),
+            activeProjectAgent = null,
         )
-        session.history += ConversationMessage.System(systemPrompt())
+        session.history += ConversationMessage.System(systemPrompt(session))
         session.transcript += TranscriptEntry.System(
             id = nextId("system"),
             message = "IDopen 已就绪。请先配置 OpenAI-compatible 接口，然后开始对话。",
         )
+        session.transcript[session.transcript.lastIndex] = (session.transcript.last() as? TranscriptEntry.System)?.copy(
+            message = welcomeMessage,
+        ) ?: session.transcript.last()
         sessions[session.id] = session
         return session
     }
@@ -565,16 +677,145 @@ class AgentSessionService(private val project: Project) {
 
     private fun session(sessionId: String): SessionState? = sessions[sessionId]
 
+    private fun currentTodoSession(): SessionState {
+        val running = currentRunSessionId?.let(::session)
+        return running ?: currentSession()
+    }
+
+    private fun currentTodoItems(): List<SessionTodoItem> = currentTodoSession().todos.toList()
+
+    private fun replaceTodoItems(items: List<SessionTodoItem>) {
+        val session = currentTodoSession()
+        session.todos.clear()
+        session.todos.addAll(items)
+        session.updatedAt = Instant.now()
+        persistSessions()
+        emitSessionsChanged()
+        emitSnapshotChanged(session)
+    }
+
+    private fun normalizeTurnOptions(turnOptions: TurnExecutionOptions): TurnExecutionOptions? {
+        val prompt = turnOptions.systemPromptOverride?.trim().takeIf { !it.isNullOrBlank() }
+        val model = turnOptions.modelOverride?.trim().takeIf { !it.isNullOrBlank() }
+        val label = turnOptions.sourceLabel?.trim().takeIf { !it.isNullOrBlank() }
+        if (prompt == null && model == null && label == null) return null
+        return TurnExecutionOptions(
+            systemPromptOverride = prompt,
+            modelOverride = model,
+            sourceLabel = label,
+        )
+    }
+
+    private fun buildTurnOverrideNotice(turnOptions: TurnExecutionOptions): String? {
+        if (turnOptions.modelOverride.isNullOrBlank() && turnOptions.sourceLabel.isNullOrBlank()) return null
+        val language = DisplayLanguage.fromStored(IDopenSettingsState.getInstance().displayLanguage)
+        return if (language == DisplayLanguage.ZH_CN) {
+            buildString {
+                append("已应用本轮命令配置")
+                turnOptions.sourceLabel?.let {
+                    append(" ")
+                    append(it)
+                }
+                turnOptions.modelOverride?.let {
+                    append("，模型覆盖为 ")
+                    append(it)
+                }
+                append("。")
+            }
+        } else {
+            buildString {
+                append("Applied turn configuration")
+                turnOptions.sourceLabel?.let {
+                    append(" ")
+                    append(it)
+                }
+                turnOptions.modelOverride?.let {
+                    append(" with model override ")
+                    append(it)
+                }
+                append(".")
+            }
+        }
+    }
+
+    private fun effectiveProviderConfig(session: SessionState, config: ProviderConfig, roundId: String): ProviderConfig {
+        val turnOverrideModel = session.turnOverrides[roundId]?.modelOverride?.takeIf { it.isNotBlank() }
+        val overrideModel = turnOverrideModel
+            ?: resolveActiveProjectAgent(session)?.model?.takeIf { it.isNotBlank() }
+            ?: return config
+        return config.copy(model = overrideModel)
+    }
+
+    private fun resolveActiveProjectAgent(session: SessionState): LoadedProjectAgent? {
+        val name = session.activeProjectAgent ?: return null
+        return ProjectAgentSupport.find(projectRoot(), name)
+    }
+
+    private fun normalizeProjectAgentName(name: String?): String? {
+        val candidate = name?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return ProjectAgentSupport.find(projectRoot(), candidate)?.name
+    }
+
+    private fun syncSessionSystemPrompt(session: SessionState) {
+        val prompt = systemPrompt(session)
+        val current = session.history.firstOrNull()
+        if (current is ConversationMessage.System && current.roundId == null) {
+            session.history[0] = current.copy(content = prompt)
+        } else {
+            session.history.add(0, ConversationMessage.System(prompt))
+        }
+        session.updatedAt = Instant.now()
+        persistSessions()
+    }
+
     private fun snapshot(session: SessionState): ChatSessionSnapshot {
         return ChatSessionSnapshot(
             sessionId = session.id,
             title = session.title,
             updatedAt = session.updatedAt,
             running = currentRunSessionId == session.id && isRunning(),
+            todos = session.todos.toList(),
             transcript = session.transcript.toList(),
             stepGroups = session.stepGroups.toList(),
             steps = session.steps.toList(),
+            activeAgentName = session.activeProjectAgent,
         )
+    }
+
+    private fun projectRoot(): java.nio.file.Path = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
+
+    private fun projectAgentActivatedMessage(agent: LoadedProjectAgent): String {
+        val language = DisplayLanguage.fromStored(IDopenSettingsState.getInstance().displayLanguage)
+        return if (language == DisplayLanguage.ZH_CN) {
+            buildString {
+                append("已启用项目 agent @")
+                append(agent.name)
+                agent.model?.takeIf { it.isNotBlank() }?.let {
+                    append("，模型覆盖为 ")
+                    append(it)
+                }
+                append("。后续轮次会附加该 agent 提示。")
+            }
+        } else {
+            buildString {
+                append("Activated project agent @")
+                append(agent.name)
+                agent.model?.takeIf { it.isNotBlank() }?.let {
+                    append(" with model override ")
+                    append(it)
+                }
+                append(". Future turns will include this agent prompt.")
+            }
+        }
+    }
+
+    private fun projectAgentClearedMessage(name: String): String {
+        val language = DisplayLanguage.fromStored(IDopenSettingsState.getInstance().displayLanguage)
+        return if (language == DisplayLanguage.ZH_CN) {
+            "已清除项目 agent @$name，后续轮次将恢复默认 provider 配置。"
+        } else {
+            "Cleared project agent @$name. Future turns will use the default provider configuration."
+        }
     }
 
     private fun buildTurnMessages(
@@ -586,7 +827,12 @@ class AgentSessionService(private val project: Project) {
             messages = session.history.toList(),
             steps = session.steps,
         )
-        val planMessages = turnPlan.asSystemMessages(roundId)
+        val planMessages = buildList {
+            session.turnOverrides[roundId]?.systemPromptOverride?.takeIf { it.isNotBlank() }?.let {
+                add(ConversationMessage.System(it, roundId))
+            }
+            addAll(turnPlan.asSystemMessages(roundId))
+        }
         return ContextWindowSupport.prepareRequestMessages(
             messages = compacted,
             prefixedSystemMessages = planMessages,
@@ -640,40 +886,61 @@ class AgentSessionService(private val project: Project) {
                 PersistedSessionState(
                     id = session.id,
                     title = session.title,
+                    todos = session.todos.toList(),
                     transcript = session.transcript.toList(),
                     history = session.history.toList(),
                     updatedAt = session.updatedAt,
                     lastCapabilityNotice = session.lastCapabilityNotice,
+                    activeProjectAgent = session.activeProjectAgent,
                 )
             },
         )
     }
 
-    private fun systemPrompt(): String {
-        val projectRoot = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
-        return """
-            You are IDopen, a coding agent running inside IntelliJ IDEA.
-            Work only inside the current project: $projectRoot
-            Prefer reading files and searching the project before suggesting changes.
-            When IDE context references are attached, treat them as hints and inspect exact code with IDE tools.
-            Use read_file(path, offset, limit) for targeted reads instead of assuming full-file context.
-            Use apply_patch_preview with edits for focused changes, or newContent for full-file rewrites.
-            Use run_command only when it materially helps.
-            Safe read-only commands may run without approval, mutating commands require approval, and dangerous commands are blocked.
-            You are connected through an OpenAI-compatible chat completions API.
-            The user may write in Chinese. Reply in the user's language.
-        """.trimIndent()
+    private fun systemPrompt(session: SessionState): String {
+        val projectRoot = projectRoot()
+        val activeAgent = resolveActiveProjectAgent(session)
+        return buildString {
+            appendLine("You are IDopen, a coding agent running inside IntelliJ IDEA.")
+            appendLine("Work only inside the current project: $projectRoot")
+            appendLine("Prefer reading files and searching the project before suggesting changes.")
+            appendLine("When IDE context references are attached, treat them as hints and inspect exact code with IDE tools.")
+            appendLine("Use read_file(path, offset, limit) for targeted reads instead of assuming full-file context.")
+            appendLine("Use apply_patch_preview with edits for focused changes, or newContent for full-file rewrites.")
+            appendLine("Use run_command only when it materially helps.")
+            appendLine("For tasks with multiple concrete steps, keep the session todo list current with todo_write and review it with todo_read before resuming work.")
+            SkillSupport.systemPromptSection(projectRoot)?.let {
+                appendLine(it)
+            }
+            McpSupport.systemPromptSection(projectRoot)?.let {
+                appendLine(it)
+            }
+            activeAgent?.let { agent ->
+                appendLine("The current session is using project agent @${agent.name}.")
+                agent.model?.takeIf { it.isNotBlank() }?.let { model ->
+                    appendLine("Use the project agent model override when supported: $model")
+                }
+                appendLine("Follow these additional project-agent instructions exactly:")
+                appendLine(agent.prompt.trim())
+            }
+            appendLine("Safe read-only commands may run without approval, mutating commands require approval, and dangerous commands are blocked.")
+            appendLine("You are connected through the configured provider API.")
+            append("The user may write in Chinese. Reply in the user's language.")
+        }
     }
 
     private data class SessionState(
         val id: String,
         var title: String,
+        val todos: MutableList<SessionTodoItem>,
         val transcript: MutableList<TranscriptEntry>,
         var stepGroups: List<SessionStepGroup>,
         var steps: List<SessionStep>,
         val history: MutableList<ConversationMessage>,
+        val turnOverrides: MutableMap<String, TurnExecutionOptions> = mutableMapOf(),
         var updatedAt: Instant = Instant.now(),
         var lastCapabilityNotice: String? = null,
+        var activeProjectAgent: String? = null,
     )
 
     private data class PendingApproval(

@@ -1,5 +1,6 @@
 package com.idopen.idopen.agent
 
+import com.idopen.idopen.settings.ChatGptAuthSupport
 import com.idopen.idopen.settings.IDopenSettingsState
 
 object ProviderConfigSupport {
@@ -9,12 +10,26 @@ object ProviderConfigSupport {
     )
 
     fun fromSettings(settings: IDopenSettingsState = IDopenSettingsState.getInstance()): ValidationResult {
-        return fromInputs(
-            baseUrl = settings.baseUrl,
-            apiKey = settings.apiKey,
-            model = settings.defaultModel,
-            headersText = settings.headersText,
-        )
+        val providerType = ProviderType.fromStored(settings.providerType)
+        val definition = ProviderDefinitionSupport.definition(providerType)
+        val preferredModel = definition.preferredModel(settings)
+        return when (providerType) {
+            ProviderType.OPENAI_COMPATIBLE -> fromInputs(
+                baseUrl = settings.baseUrl,
+                apiKey = settings.apiKey,
+                model = preferredModel,
+                headersText = settings.headersText,
+            )
+
+            ProviderType.CHATGPT_AUTH -> fromChatGptAuth(
+                accessToken = settings.chatGptAccessToken,
+                refreshToken = settings.chatGptRefreshToken,
+                accessTokenExpiresAt = settings.chatGptAccessTokenExpiresAt,
+                accountId = settings.chatGptAccountId,
+                model = preferredModel,
+                headersText = settings.headersText,
+            )
+        }
     }
 
     fun fromInputs(
@@ -28,12 +43,12 @@ object ProviderConfigSupport {
         val normalizedApiKey = apiKey.trim()
         val normalizedModel = model.trim()
 
-        if (normalizedBaseUrl.isBlank()) return ValidationResult(null, "请填写接口地址。")
+        if (normalizedBaseUrl.isBlank()) return ValidationResult(null, "Please provide a base URL.")
         if (!normalizedBaseUrl.startsWith("http://") && !normalizedBaseUrl.startsWith("https://")) {
-            return ValidationResult(null, "接口地址必须以 http:// 或 https:// 开头。")
+            return ValidationResult(null, "Base URL must start with http:// or https://.")
         }
-        if (normalizedApiKey.isBlank()) return ValidationResult(null, "请填写 API Key。")
-        if (requireModel && normalizedModel.isBlank()) return ValidationResult(null, "请填写默认模型。")
+        if (normalizedApiKey.isBlank()) return ValidationResult(null, "Please provide an API key.")
+        if (requireModel && normalizedModel.isBlank()) return ValidationResult(null, "Please provide a default model.")
 
         return ValidationResult(
             config = ProviderConfig(
@@ -42,6 +57,40 @@ object ProviderConfigSupport {
                 apiKey = normalizedApiKey,
                 model = normalizedModel,
                 headers = parseHeaders(headersText),
+            ),
+            error = null,
+        )
+    }
+
+    fun fromChatGptAuth(
+        accessToken: String,
+        refreshToken: String,
+        accessTokenExpiresAt: Long,
+        accountId: String?,
+        model: String,
+        headersText: String,
+        requireModel: Boolean = true,
+    ): ValidationResult {
+        val normalizedModel = model.trim()
+        val normalizedAccessToken = accessToken.trim()
+        val normalizedRefreshToken = refreshToken.trim()
+        if (normalizedAccessToken.isBlank() && normalizedRefreshToken.isBlank()) {
+            return ValidationResult(null, "Please sign in with ChatGPT first.")
+        }
+        if (requireModel && normalizedModel.isBlank()) {
+            return ValidationResult(null, "Please select a GPT model.")
+        }
+
+        return ValidationResult(
+            config = ProviderConfig(
+                type = ProviderType.CHATGPT_AUTH,
+                baseUrl = ChatGptAuthSupport.CODEX_API_BASE,
+                apiKey = normalizedAccessToken,
+                model = normalizedModel,
+                headers = parseHeaders(headersText),
+                refreshToken = normalizedRefreshToken.ifBlank { null },
+                accessTokenExpiresAt = accessTokenExpiresAt.takeIf { it > 0L },
+                accountId = accountId?.trim()?.ifBlank { null },
             ),
             error = null,
         )

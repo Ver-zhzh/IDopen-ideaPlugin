@@ -56,4 +56,32 @@ class ProviderRuntimeSupportTest {
         assertTrue(profile.includeTools)
         assertEquals(0, probes)
     }
+
+    @Test
+    fun `chatgpt auth auto mode enables tools without probing`() {
+        var probes = 0
+        val profile = ProviderRuntimeSupport.resolveProfile(
+            config = ProviderConfig(
+                type = ProviderType.CHATGPT_AUTH,
+                baseUrl = "https://chatgpt.com/backend-api/codex",
+                apiKey = "access-token",
+                model = "gpt-5.4",
+                headers = emptyMap(),
+                refreshToken = "refresh-token",
+                accessTokenExpiresAt = Long.MAX_VALUE,
+            ),
+            settings = IDopenSettingsState().apply {
+                toolCallingMode = ToolCallingMode.AUTO.name
+            },
+            capabilityLookup = {
+                probes += 1
+                ToolCapability(false)
+            },
+        )
+
+        assertTrue(profile.includeTools)
+        assertEquals(ToolCallingMode.ENABLED, profile.effectiveToolMode)
+        assertEquals(ProviderResponseProtocol.RESPONSES, profile.responseProtocol)
+        assertEquals(0, probes)
+    }
 }

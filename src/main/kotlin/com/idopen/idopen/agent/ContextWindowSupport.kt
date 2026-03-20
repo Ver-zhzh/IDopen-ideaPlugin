@@ -17,13 +17,15 @@ object ContextWindowSupport {
         val leadingSystem = messages.firstOrNull() as? ConversationMessage.System
         val body = if (leadingSystem != null) messages.drop(1) else messages
         if (body.isEmpty()) return messages
+        val protectedRoundId = body.asReversed().firstNotNullOfOrNull { it.roundId }
 
         val recent = mutableListOf<ConversationMessage>()
         var estimatedChars = 0
         for (message in body.asReversed()) {
             val estimate = estimateSize(message)
+            val isProtectedRound = protectedRoundId != null && message.roundId == protectedRoundId
             val wouldOverflow = estimatedChars + estimate > MAX_CONTEXT_CHARS
-            if (recent.size >= MIN_RECENT_MESSAGES && (wouldOverflow || recent.size >= MAX_RECENT_MESSAGES)) {
+            if (!isProtectedRound && recent.size >= MIN_RECENT_MESSAGES && (wouldOverflow || recent.size >= MAX_RECENT_MESSAGES)) {
                 break
             }
             recent += message
@@ -31,16 +33,36 @@ object ContextWindowSupport {
         }
 
         val recentMessages = recent.asReversed()
-        if (recentMessages.size == body.size) {
+        val selectedRoundIds = recentMessages.mapNotNull { it.roundId }.toSet()
+        val selectedMessages = recentMessages.toSet()
+        val expandedRecentMessages = if (selectedRoundIds.isEmpty()) {
+            recentMessages
+        } else {
+            body.filter { message ->
+                if (message.roundId != null) {
+                    message.roundId in selectedRoundIds
+                } else {
+                    message in selectedMessages
+                }
+            }
+        }
+
+        if (expandedRecentMessages.size == body.size) {
             return messages
         }
 
-        val olderMessages = body.dropLast(recentMessages.size)
-        val summary = summarize(olderMessages, steps, recentMessages)
+        val olderMessages = body.filter { message ->
+            if (message.roundId != null) {
+                message.roundId !in selectedRoundIds
+            } else {
+                message !in selectedMessages
+            }
+        }
+        val summary = summarize(olderMessages, steps, expandedRecentMessages)
         return buildList {
             if (leadingSystem != null) add(leadingSystem)
             if (summary.isNotBlank()) add(ConversationMessage.System(summary))
-            addAll(recentMessages)
+            addAll(expandedRecentMessages)
         }
     }
 
