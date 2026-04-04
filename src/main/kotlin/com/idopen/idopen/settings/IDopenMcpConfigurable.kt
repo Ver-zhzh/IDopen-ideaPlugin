@@ -2,11 +2,18 @@ package com.idopen.idopen.settings
 
 import com.idopen.idopen.agent.LoadedMcpServer
 import com.idopen.idopen.agent.McpSupport
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.Document
+import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.ex.EditorEx
+import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
+import com.intellij.ui.EditorTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
@@ -16,7 +23,8 @@ import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
-import java.awt.GridLayout
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import java.nio.file.Path
 import javax.swing.BorderFactory
 import javax.swing.Box
@@ -28,9 +36,14 @@ import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JSplitPane
+import javax.swing.SwingUtilities
 import javax.swing.UIManager
 
 class IDopenMcpConfigurable : Configurable {
+    companion object {
+        private val LOG = Logger.getInstance(IDopenMcpConfigurable::class.java)
+    }
+
     private enum class McpTarget {
         USER,
         PROJECT,
@@ -44,9 +57,12 @@ class IDopenMcpConfigurable : Configurable {
     private val userConfigPathArea = createReadOnlyArea(rows = 2)
     private val projectConfigPathArea = createReadOnlyArea(rows = 2)
     private val editorPathLabel = JBLabel()
-    private val editorArea = JBTextArea()
+    private val editorHintLabel = JBLabel()
+    private val editorHost = JPanel(BorderLayout())
+    private val fallbackEditorArea = JBTextArea()
     private val serversSummaryLabel = JBLabel()
     private val serversContainer = JPanel()
+    private val overviewPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(12), JBUI.scale(12)))
 
     private val targetField = JComboBox(arrayOf(McpTarget.USER, McpTarget.PROJECT))
     private val saveButton = JButton()
@@ -56,43 +72,55 @@ class IDopenMcpConfigurable : Configurable {
     private val emptyTemplateButton = JButton()
     private val stdioTemplateButton = JButton()
     private val httpTemplateButton = JButton()
+    private val formatButton = JButton()
     private val refreshStatusButton = JButton()
 
     private var panel: JPanel? = null
     private var loadedDocument: McpConfigDocument? = null
+    private var editorDocument: Document? = null
+    private var editorField: EditorTextField? = null
+    private lateinit var contentSplit: JSplitPane
+    private lateinit var editorCard: JComponent
+    private lateinit var serversCard: JComponent
 
     override fun getDisplayName(): String = "IDopen MCP"
 
     override fun createComponent(): JComponent {
         if (panel != null) return panel!!
 
-        configureComponents()
-        applyTexts()
-        bindActions()
+        return runCatching {
+            configureComponents()
+            applyTexts()
+            bindActions()
 
-        val contentSplit = JSplitPane(
-            JSplitPane.HORIZONTAL_SPLIT,
-            buildEditorCard(),
-            buildDetectedServersCard(),
-        ).apply {
-            resizeWeight = 0.62
-            dividerSize = JBUI.scale(10)
-            border = BorderFactory.createEmptyBorder()
-            setContinuousLayout(true)
+            editorCard = buildEditorCard()
+            serversCard = buildDetectedServersCard()
+            contentSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, editorCard, serversCard).apply {
+                resizeWeight = 0.64
+                dividerSize = JBUI.scale(10)
+                border = BorderFactory.createEmptyBorder()
+                setContinuousLayout(true)
+            }
+
+            panel = JPanel(BorderLayout(0, JBUI.scale(14))).apply {
+                border = JBUI.Borders.empty(16)
+                add(buildTopPanel(), BorderLayout.NORTH)
+                add(contentSplit, BorderLayout.CENTER)
+            }
+
+            installResponsiveBehavior()
+            SwingUtilities.invokeLater { initializeAfterCreate() }
+            panel!!
+        }.getOrElse { error ->
+            LOG.error("Failed to create IDopen MCP settings UI", error)
+            val errorPanel = buildErrorPanel(error)
+            panel = errorPanel
+            errorPanel
         }
-
-        panel = JPanel(BorderLayout(0, JBUI.scale(14))).apply {
-            border = JBUI.Borders.empty(16)
-            add(buildTopPanel(), BorderLayout.NORTH)
-            add(contentSplit, BorderLayout.CENTER)
-        }
-
-        refreshView(loadEditor = true)
-        return panel!!
     }
 
     override fun isModified(): Boolean {
-        val current = normalizeEditorText(editorArea.text)
+        val current = normalizeEditorText(currentEditorText())
         val loaded = normalizeEditorText(loadedDocument?.text.orEmpty())
         return current != loaded
     }
@@ -103,29 +131,100 @@ class IDopenMcpConfigurable : Configurable {
     }
 
     override fun reset() {
-        refreshView(loadEditor = true)
+        if (panel == null) return
+        SwingUtilities.invokeLater { initializeAfterCreate() }
     }
 
     override fun disposeUIResources() {
         panel = null
         loadedDocument = null
+        editorField = null
+        editorDocument = null
+        editorHost.removeAll()
+    }
+
+    private fun buildErrorPanel(error: Throwable): JPanel {
+        val title = JBLabel(t("IDopen MCP 页面加载失败", "Failed to load the IDopen MCP page")).apply {
+            font = font.deriveFont(Font.BOLD, font.size2D + 1f)
+        }
+        val body = createReadOnlyArea(rows = 8).apply {
+            text = buildString {
+                appendLine(t("设置页初始化时发生异常。", "The settings page threw an exception during initialization."))
+                appendLine()
+                appendLine("${error::class.java.simpleName}: ${error.message.orEmpty()}")
+                error.stackTrace.take(8).forEach { appendLine("at $it") }
+            }
+        }
+        return JPanel(BorderLayout(0, JBUI.scale(12))).apply {
+            border = JBUI.Borders.empty(16)
+            add(title, BorderLayout.NORTH)
+            add(JBScrollPane(body), BorderLayout.CENTER)
+        }
+    }
+
+    private fun initializeAfterCreate() {
+        runCatching {
+            ensureEditorComponent()
+            refreshView(loadEditor = true)
+            applyResponsiveLayout()
+        }.onFailure { error ->
+            LOG.error("Failed to initialize IDopen MCP settings content", error)
+            showInlineInitializationError(error)
+        }
+    }
+
+    private fun showInlineInitializationError(error: Throwable) {
+        statusValueLabel.text = t("页面初始化失败", "Failed to initialize the page")
+        statusHintArea.text = "${error::class.java.simpleName}: ${error.message.orEmpty()}"
+        serversSummaryLabel.text = t("初始化失败", "Initialization failed")
+        editorPathLabel.text = t("编辑路径：初始化失败", "Editing path: initialization failed")
+        editorHintLabel.text = t("请将当前错误信息反馈回来。", "Please send this error back for diagnosis.")
+        editorHost.removeAll()
+        editorHost.add(
+            JBScrollPane(
+                createReadOnlyArea(rows = 12).apply {
+                    text = buildString {
+                        appendLine("${error::class.java.simpleName}: ${error.message.orEmpty()}")
+                        error.stackTrace.take(8).forEach { appendLine("at $it") }
+                    }
+                },
+            ),
+            BorderLayout.CENTER,
+        )
+        editorHost.revalidate()
+        editorHost.repaint()
+        serversContainer.removeAll()
+        serversContainer.add(
+            createEmptyStateCard(
+                title = t("内容加载失败", "Content failed to load"),
+                lines = listOf(
+                    t("设置页主体已经返回，但初始化阶段抛出了异常。", "The settings page rendered, but initialization failed afterward."),
+                    "${error::class.java.simpleName}: ${error.message.orEmpty()}",
+                ),
+            ),
+        )
+        serversContainer.revalidate()
+        serversContainer.repaint()
     }
 
     private fun configureComponents() {
         introLabel.foreground = mutedForeground()
-
         statusValueLabel.font = statusValueLabel.font.deriveFont(Font.BOLD, statusValueLabel.font.size2D + 1f)
-        serversSummaryLabel.foreground = mutedForeground()
         editorPathLabel.foreground = mutedForeground()
-
-        editorArea.rows = 22
-        editorArea.font = Font(Font.MONOSPACED, Font.PLAIN, editorArea.font.size)
-        editorArea.lineWrap = false
-        editorArea.wrapStyleWord = false
-        editorArea.tabSize = 2
+        editorHintLabel.foreground = mutedForeground()
+        serversSummaryLabel.foreground = mutedForeground()
+        editorHost.isOpaque = false
+        fallbackEditorArea.rows = 22
+        fallbackEditorArea.columns = 88
+        fallbackEditorArea.font = Font(Font.MONOSPACED, Font.PLAIN, fallbackEditorArea.font.size)
+        fallbackEditorArea.lineWrap = false
+        fallbackEditorArea.wrapStyleWord = false
+        fallbackEditorArea.tabSize = 2
+        fallbackEditorArea.border = JBUI.Borders.empty(8)
 
         serversContainer.layout = BoxLayout(serversContainer, BoxLayout.Y_AXIS)
         serversContainer.isOpaque = false
+        overviewPanel.isOpaque = false
 
         targetField.preferredSize = Dimension(JBUI.scale(180), targetField.preferredSize.height)
         targetField.renderer = object : DefaultListCellRenderer() {
@@ -146,9 +245,59 @@ class IDopenMcpConfigurable : Configurable {
         }
     }
 
+    private fun createEditorField(document: Document): EditorTextField {
+        return object : EditorTextField(document, null, PlainTextFileType.INSTANCE, false, false) {
+            override fun createEditor(): EditorEx {
+                val editor = super.createEditor() as EditorEx
+                editor.settings.isLineNumbersShown = true
+                editor.settings.isIndentGuidesShown = true
+                editor.settings.isFoldingOutlineShown = false
+                editor.settings.additionalColumnsCount = 2
+                editor.settings.additionalLinesCount = 1
+                editor.settings.isWhitespacesShown = false
+                editor.settings.isRightMarginShown = false
+                editor.setHorizontalScrollbarVisible(true)
+                editor.setVerticalScrollbarVisible(true)
+                editor.setBorder(BorderFactory.createEmptyBorder())
+                return editor
+            }
+        }.apply {
+            preferredSize = Dimension(JBUI.scale(760), JBUI.scale(540))
+            minimumSize = Dimension(JBUI.scale(520), JBUI.scale(320))
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor(0xD9DDE3, 0x3F434A)),
+                JBUI.Borders.empty(2),
+            )
+        }
+    }
+
+    private fun ensureEditorComponent() {
+        if (editorField != null || editorHost.componentCount > 0) return
+        val component = runCatching {
+            val document = EditorFactory.getInstance().createDocument("")
+            editorDocument = document
+            createEditorField(document).also { editorField = it }
+        }.getOrElse {
+            JBScrollPane(
+                fallbackEditorArea,
+                JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+                JBScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED,
+            ).apply {
+                border = BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(JBColor(0xD9DDE3, 0x3F434A)),
+                    JBUI.Borders.empty(),
+                )
+                preferredSize = Dimension(JBUI.scale(760), JBUI.scale(540))
+                minimumSize = Dimension(JBUI.scale(520), JBUI.scale(320))
+            }
+        }
+        editorHost.removeAll()
+        editorHost.add(component, BorderLayout.CENTER)
+    }
+
     private fun applyTexts() {
         introLabel.text = t(
-            "在这里集中维护 MCP 配置。用户级适合全局服务，项目级适合当前仓库；保存前可先校验，右侧会实时展示当前识别到的服务。",
+            "在这里集中维护 MCP 配置。用户级适合全局服务，项目级适合当前仓库；保存前可先校验，右侧会展示当前识别到的服务。",
             "Manage MCP config here. Use User for global services and Project for repository-specific services. Validate before saving, and review the detected servers on the right.",
         )
 
@@ -159,14 +308,19 @@ class IDopenMcpConfigurable : Configurable {
         emptyTemplateButton.text = t("空模板", "Empty template")
         stdioTemplateButton.text = t("Stdio 示例", "Stdio example")
         httpTemplateButton.text = t("HTTP 示例", "HTTP example")
+        formatButton.text = t("格式化 JSON", "Format JSON")
         refreshStatusButton.text = t("刷新状态", "Refresh status")
+        editorHintLabel.text = t(
+            "内嵌 IDE 编辑器，适合直接修改 JSON；保存前建议先校验或格式化。",
+            "Embedded IDE editor for direct JSON editing. Validate or format before saving when needed.",
+        )
     }
 
     private fun bindActions() {
         targetField.addActionListener { loadSelectedTarget() }
         reloadButton.addActionListener { loadSelectedTarget() }
         validateButton.addActionListener {
-            val validation = runCatching { McpConfigEditorSupport.validateConfigText(editorArea.text) }
+            val validation = runCatching { McpConfigEditorSupport.validateConfigText(currentEditorText()) }
                 .onFailure { error ->
                     Messages.showErrorDialog(
                         error.message ?: t("MCP 配置无效。", "Invalid MCP config."),
@@ -197,9 +351,19 @@ class IDopenMcpConfigurable : Configurable {
                     )
                 }
         }
-        emptyTemplateButton.addActionListener { editorArea.text = McpConfigEditorSupport.emptyTemplate() }
-        stdioTemplateButton.addActionListener { editorArea.text = McpConfigEditorSupport.stdioExampleTemplate() }
-        httpTemplateButton.addActionListener { editorArea.text = McpConfigEditorSupport.httpExampleTemplate() }
+        emptyTemplateButton.addActionListener { updateEditorText(McpConfigEditorSupport.emptyTemplate()) }
+        stdioTemplateButton.addActionListener { updateEditorText(McpConfigEditorSupport.stdioExampleTemplate()) }
+        httpTemplateButton.addActionListener { updateEditorText(McpConfigEditorSupport.httpExampleTemplate()) }
+        formatButton.addActionListener {
+            runCatching { McpConfigEditorSupport.formatConfigText(currentEditorText()) }
+                .onSuccess(::updateEditorText)
+                .onFailure { error ->
+                    Messages.showErrorDialog(
+                        error.message ?: t("JSON 格式化失败。", "Failed to format the JSON."),
+                        "IDopen MCP",
+                    )
+                }
+        }
         refreshStatusButton.addActionListener { refreshView(loadEditor = false) }
     }
 
@@ -216,23 +380,21 @@ class IDopenMcpConfigurable : Configurable {
             add(introLabel)
         }
 
-        val overview = JPanel(GridLayout(1, 3, JBUI.scale(12), 0)).apply {
-            isOpaque = false
-            add(
-                createCard(
-                    title = t("状态概览", "Status"),
-                    content = JPanel().apply {
-                        layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                        isOpaque = false
-                        add(statusValueLabel)
-                        add(Box.createVerticalStrut(JBUI.scale(6)))
-                        add(statusHintArea)
-                    },
-                ),
-            )
-            add(createCard(title = t("用户配置", "User config"), content = userConfigPathArea))
-            add(createCard(title = t("项目配置", "Project config"), content = projectConfigPathArea))
-        }
+        overviewPanel.removeAll()
+        overviewPanel.add(
+            createOverviewCard(
+                title = t("状态概览", "Status"),
+                content = JPanel().apply {
+                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                    isOpaque = false
+                    add(statusValueLabel)
+                    add(Box.createVerticalStrut(JBUI.scale(6)))
+                    add(statusHintArea)
+                },
+            ),
+        )
+        overviewPanel.add(createOverviewCard(t("用户配置", "User config"), userConfigPathArea))
+        overviewPanel.add(createOverviewCard(t("项目配置", "Project config"), projectConfigPathArea))
 
         val actions = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -247,7 +409,7 @@ class IDopenMcpConfigurable : Configurable {
             isOpaque = false
             add(header)
             add(Box.createVerticalStrut(JBUI.scale(14)))
-            add(overview)
+            add(overviewPanel)
             add(Box.createVerticalStrut(JBUI.scale(14)))
             add(actions)
         }
@@ -272,35 +434,40 @@ class IDopenMcpConfigurable : Configurable {
             add(emptyTemplateButton)
             add(stdioTemplateButton)
             add(httpTemplateButton)
+            add(formatButton)
             add(refreshStatusButton)
         }
     }
 
     private fun buildEditorCard(): JComponent {
-        val header = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        val titleLabel = JBLabel(t("配置编辑器", "Config editor")).apply {
+            font = font.deriveFont(Font.BOLD)
+        }
+
+        val header = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            add(
-                JBLabel(t("配置编辑器", "Config editor")).apply {
-                    font = font.deriveFont(Font.BOLD)
-                },
-                BorderLayout.NORTH,
-            )
-            add(editorPathLabel, BorderLayout.CENTER)
+            add(titleLabel)
+            add(Box.createVerticalStrut(JBUI.scale(4)))
+            add(editorPathLabel)
+            add(Box.createVerticalStrut(JBUI.scale(4)))
+            add(editorHintLabel)
         }
 
-        val editorScroll = JBScrollPane(
-            editorArea,
-            JBScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
-            JBScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED,
-        ).apply {
-            border = BorderFactory.createEmptyBorder()
-        }
-
-        return createCard(title = null, content = JPanel(BorderLayout(0, JBUI.scale(10))).apply {
+        val wrapper = JPanel(BorderLayout(0, JBUI.scale(10))).apply {
             isOpaque = false
             add(header, BorderLayout.NORTH)
-            add(editorScroll, BorderLayout.CENTER)
-        })
+            add(
+                JPanel(BorderLayout()).apply {
+                    isOpaque = false
+                    border = JBUI.Borders.emptyTop(6)
+                    add(editorHost, BorderLayout.CENTER)
+                },
+                BorderLayout.CENTER,
+            )
+        }
+
+        return createCard(null, wrapper)
     }
 
     private fun buildDetectedServersCard(): JComponent {
@@ -319,9 +486,11 @@ class IDopenMcpConfigurable : Configurable {
             border = BorderFactory.createEmptyBorder()
             viewport.isOpaque = false
             isOpaque = false
+            horizontalScrollBarPolicy = JBScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+            preferredSize = Dimension(JBUI.scale(420), JBUI.scale(540))
         }
 
-        return createCard(title = null, content = JPanel(BorderLayout(0, JBUI.scale(10))).apply {
+        return createCard(null, JPanel(BorderLayout(0, JBUI.scale(10))).apply {
             isOpaque = false
             add(header, BorderLayout.NORTH)
             add(scroll, BorderLayout.CENTER)
@@ -439,24 +608,24 @@ class IDopenMcpConfigurable : Configurable {
         val details = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            add(createDetailLabel(t("来源", "Source"), server.sourcePath.toDisplayString()))
+            add(createDetailArea(t("来源", "Source"), server.sourcePath.toDisplayString()))
             add(Box.createVerticalStrut(JBUI.scale(4)))
-            add(createDetailLabel(t("地址", "Target"), server.url ?: serverCommandLine(server)))
+            add(createDetailArea(t("地址", "Target"), server.url ?: serverCommandLine(server)))
             if (server.env.isNotEmpty()) {
                 add(Box.createVerticalStrut(JBUI.scale(4)))
-                add(createDetailLabel(t("环境变量", "Env"), server.env.keys.sorted().joinToString(", ")))
+                add(createDetailArea(t("环境变量", "Env"), server.env.keys.sorted().joinToString(", ")))
             }
             if (server.headers.isNotEmpty()) {
                 add(Box.createVerticalStrut(JBUI.scale(4)))
-                add(createDetailLabel(t("请求头", "Headers"), server.headers.keys.sorted().joinToString(", ")))
+                add(createDetailArea(t("请求头", "Headers"), server.headers.keys.sorted().joinToString(", ")))
             }
             if (server.oauthScopes.isNotEmpty()) {
                 add(Box.createVerticalStrut(JBUI.scale(4)))
-                add(createDetailLabel(t("OAuth 范围", "OAuth scopes"), server.oauthScopes.joinToString(", ")))
+                add(createDetailArea(t("OAuth 范围", "OAuth scopes"), server.oauthScopes.joinToString(", ")))
             }
         }
 
-        return createCard(title = null, content = JPanel(BorderLayout(0, JBUI.scale(8))).apply {
+        return createCard(null, JPanel(BorderLayout(0, JBUI.scale(8))).apply {
             isOpaque = false
             add(header, BorderLayout.NORTH)
             add(details, BorderLayout.CENTER)
@@ -478,11 +647,18 @@ class IDopenMcpConfigurable : Configurable {
             }
         }
 
-        return createCard(title = null, content = JPanel(BorderLayout(0, JBUI.scale(8))).apply {
+        return createCard(null, JPanel(BorderLayout(0, JBUI.scale(8))).apply {
             isOpaque = false
             add(titleLabel, BorderLayout.NORTH)
             add(linesPanel, BorderLayout.CENTER)
         })
+    }
+
+    private fun createOverviewCard(title: String, content: JComponent): JComponent {
+        return createCard(title, content).apply {
+            preferredSize = Dimension(JBUI.scale(360), JBUI.scale(150))
+            minimumSize = Dimension(JBUI.scale(280), JBUI.scale(140))
+        }
     }
 
     private fun createCard(title: String?, content: JComponent): JPanel {
@@ -505,6 +681,46 @@ class IDopenMcpConfigurable : Configurable {
         return card
     }
 
+    private fun installResponsiveBehavior() {
+        panel?.addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent?) {
+                applyResponsiveLayout()
+            }
+        })
+        SwingUtilities.invokeLater { applyResponsiveLayout() }
+    }
+
+    private fun applyResponsiveLayout() {
+        val root = panel ?: return
+        val width = root.width.takeIf { it > 0 } ?: return
+        val narrow = width < JBUI.scale(1320)
+        val desiredOrientation = if (narrow) JSplitPane.VERTICAL_SPLIT else JSplitPane.HORIZONTAL_SPLIT
+        if (contentSplit.orientation != desiredOrientation) {
+            contentSplit.orientation = desiredOrientation
+        }
+
+        if (narrow) {
+            editorCard.minimumSize = Dimension(0, JBUI.scale(340))
+            serversCard.minimumSize = Dimension(0, JBUI.scale(240))
+            SwingUtilities.invokeLater {
+                if (contentSplit.orientation == JSplitPane.VERTICAL_SPLIT && contentSplit.height > 0) {
+                    contentSplit.dividerLocation = (contentSplit.height * 0.62).toInt()
+                }
+            }
+        } else {
+            editorCard.minimumSize = Dimension(JBUI.scale(620), 0)
+            serversCard.minimumSize = Dimension(JBUI.scale(360), 0)
+            SwingUtilities.invokeLater {
+                if (contentSplit.orientation == JSplitPane.HORIZONTAL_SPLIT && contentSplit.width > 0) {
+                    contentSplit.dividerLocation = (contentSplit.width * 0.64).toInt()
+                }
+            }
+        }
+
+        root.revalidate()
+        root.repaint()
+    }
+
     private fun loadSelectedTarget() {
         val document = when (selectedTarget()) {
             McpTarget.USER -> McpConfigEditorSupport.loadUserConfig()
@@ -520,14 +736,13 @@ class IDopenMcpConfigurable : Configurable {
         }
         loadedDocument = document
         editorPathLabel.text = t("编辑路径：", "Editing path: ") + document.path.toDisplayString()
-        editorArea.text = document.text
-        editorArea.caretPosition = 0
+        updateEditorText(document.text)
     }
 
     private fun saveCurrentConfig(showDialog: Boolean) {
         val path = currentTargetPath() ?: return
         runCatching {
-            McpConfigEditorSupport.saveConfig(path, editorArea.text)
+            McpConfigEditorSupport.saveConfig(path, currentEditorText())
             loadedDocument = McpConfigEditorSupport.loadConfig(path)
             editorPathLabel.text = t("编辑路径：", "Editing path: ") + path.toDisplayString()
         }.onSuccess {
@@ -544,6 +759,26 @@ class IDopenMcpConfigurable : Configurable {
                 "IDopen MCP",
             )
         }
+    }
+
+    private fun updateEditorText(text: String) {
+        val normalized = sanitizeEditorText(text)
+        editorDocument?.let { document ->
+            WriteAction.run<RuntimeException> {
+                document.setText(normalized)
+            }
+        } ?: run {
+            fallbackEditorArea.text = normalized
+        }
+        editorField?.editor?.caretModel?.moveToOffset(0)
+        editorField?.editor?.scrollingModel?.scrollToCaret(com.intellij.openapi.editor.ScrollType.RELATIVE)
+        if (editorField == null) {
+            fallbackEditorArea.caretPosition = 0
+        }
+    }
+
+    private fun currentEditorText(): String {
+        return sanitizeEditorText(editorDocument?.text ?: fallbackEditorArea.text)
     }
 
     private fun selectedTarget(): McpTarget {
@@ -582,8 +817,16 @@ class IDopenMcpConfigurable : Configurable {
         }
     }
 
-    private fun createDetailLabel(label: String, value: String): JComponent {
-        return JBLabel("<html><b>${htmlEscape(label)}:</b> ${htmlEscape(value)}</html>").apply {
+    private fun createDetailArea(label: String, value: String): JComponent {
+        return JBTextArea().apply {
+            isEditable = false
+            isOpaque = false
+            lineWrap = true
+            wrapStyleWord = true
+            rows = 2
+            columns = 28
+            border = BorderFactory.createEmptyBorder()
+            text = "$label: $value"
             foreground = mutedForeground()
         }
     }
@@ -610,24 +853,21 @@ class IDopenMcpConfigurable : Configurable {
         }.trim()
     }
 
+    private fun mutedForeground() = UIManager.getColor("Label.disabledForeground") ?: JBColor.GRAY
+
     private fun normalizeEditorText(value: String): String {
-        return value.replace("\r\n", "\n").trimEnd()
+        return sanitizeEditorText(value).trimEnd()
     }
 
-    private fun mutedForeground(): java.awt.Color {
-        return UIManager.getColor("Label.disabledForeground") ?: JBColor.GRAY
+    private fun sanitizeEditorText(value: String): String {
+        return value
+            .replace("\uFEFF", "")
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
     }
 
     private fun Path.toDisplayString(): String {
         return toString().replace('\\', '/')
-    }
-
-    private fun htmlEscape(value: String): String {
-        return value
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
     }
 
     private fun t(zh: String, en: String): String {

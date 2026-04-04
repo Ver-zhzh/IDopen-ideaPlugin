@@ -109,6 +109,7 @@ data class TurnExecutionOptions(
     val systemPromptOverride: String? = null,
     val modelOverride: String? = null,
     val sourceLabel: String? = null,
+    val modeOverride: SessionMode? = null,
 )
 
 data class ChatSessionSummary(
@@ -118,6 +119,7 @@ data class ChatSessionSummary(
     val entryCount: Int,
     val running: Boolean,
     val activeAgentName: String? = null,
+    val mode: SessionMode = SessionMode.GENERAL,
 )
 
 data class ChatSessionSnapshot(
@@ -130,6 +132,7 @@ data class ChatSessionSnapshot(
     val stepGroups: List<SessionStepGroup>,
     val steps: List<SessionStep>,
     val activeAgentName: String? = null,
+    val mode: SessionMode = SessionMode.GENERAL,
 )
 
 data class PatchEdit(

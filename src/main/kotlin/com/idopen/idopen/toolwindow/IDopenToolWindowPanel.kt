@@ -13,6 +13,8 @@ import com.idopen.idopen.agent.McpSupport
 import com.idopen.idopen.agent.ProjectAgentSupport
 import com.idopen.idopen.agent.ProviderDefinitionSupport
 import com.idopen.idopen.agent.ProviderType
+import com.idopen.idopen.agent.SessionMode
+import com.idopen.idopen.agent.SessionModeSupport
 import com.idopen.idopen.agent.SessionStep
 import com.idopen.idopen.agent.SessionEvent
 import com.idopen.idopen.agent.SessionListener
@@ -77,12 +79,15 @@ import javax.swing.BoxLayout
 import javax.swing.DefaultComboBoxModel
 import javax.swing.DefaultListCellRenderer
 import javax.swing.JButton
+import javax.swing.ButtonGroup
 import javax.swing.JComponent
 import javax.swing.JComboBox
 import javax.swing.JEditorPane
+import javax.swing.JMenu
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.JRadioButtonMenuItem
 import javax.swing.ScrollPaneConstants
 import javax.swing.KeyStroke
 import javax.swing.JMenuItem
@@ -123,6 +128,8 @@ class IDopenToolWindowPanel(private val project: Project) {
     private val providerBadge = createPillLabel(Palette.PROVIDER_BG, Palette.PROVIDER_BORDER)
     private val endpointBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val modelBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
+    private val modeSelector = JComboBox(SessionMode.entries.toTypedArray())
+    private val modeBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val agentBadge = createPillLabel(Palette.MUTED_BG, Palette.MUTED_BORDER)
     private val statusBadge = createPillLabel(Palette.STATUS_IDLE_BG, Palette.STATUS_IDLE_BORDER)
     private val trustModeCheckBox = JBCheckBox("信任模式")
@@ -143,6 +150,7 @@ class IDopenToolWindowPanel(private val project: Project) {
     private var currentSessionId: String = service.getCurrentSessionId()
     private var currentSnapshot: ChatSessionSnapshot = service.getCurrentSessionSnapshot()
     private var updatingSessionSelector = false
+    private var updatingModeSelector = false
     private var lastRenderedRoundId: String? = null
     private var renderedRoundCount: Int = 0
     @Suppress("unused")
@@ -167,6 +175,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         inputArea.foreground = JBColor.foreground()
         (inputArea.caret as? DefaultCaret)?.updatePolicy = DefaultCaret.ALWAYS_UPDATE
         agentBadge.isVisible = false
+        modeBadge.isVisible = false
         registerSendShortcut()
         configureSessionSelector()
         configureSlashCommands()
@@ -206,6 +215,26 @@ class IDopenToolWindowPanel(private val project: Project) {
             if (updatingSessionSelector) return@addActionListener
             val summary = sessionSelector.selectedItem as? ChatSessionSummary ?: return@addActionListener
             service.selectSession(summary.id)
+        }
+        modeSelector.preferredSize = Dimension(126, 28)
+        modeSelector.isOpaque = false
+        modeSelector.renderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean,
+            ): Component {
+                val component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                text = SessionModeSupport.shortLabel(value as? SessionMode ?: SessionMode.GENERAL, currentLanguage())
+                return component
+            }
+        }
+        modeSelector.addActionListener {
+            if (updatingModeSelector) return@addActionListener
+            val mode = modeSelector.selectedItem as? SessionMode ?: return@addActionListener
+            applySessionMode(mode)
         }
         newSessionButton.text = "+"
         newSessionButton.margin = JBInsets(2, 10, 2, 10)
@@ -477,6 +506,12 @@ class IDopenToolWindowPanel(private val project: Project) {
         toggles.isOpaque = false
         includeCurrentFile.isOpaque = false
         includeSelection.isOpaque = false
+        val modeRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        modeRow.isOpaque = false
+        modeRow.add(JBLabel(t("模式", "Mode")))
+        modeRow.add(modeSelector)
+        toggles.add(modeRow)
+        toggles.add(Box.createRigidArea(Dimension(10, 0)))
         toggles.add(includeCurrentFile)
         toggles.add(includeSelection)
         toggles.add(Box.createRigidArea(Dimension(10, 0)))
@@ -850,6 +885,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         if (modelOverride.isNullOrBlank()) {
             modelOverride = commandAgent?.model?.takeIf { it.isNotBlank() }
         }
+        val modeOverride = customCommand.mode ?: commandAgent?.mode
         val systemPromptOverride = commandAgent?.let { agent ->
             buildString {
                 appendLine("Turn-specific project agent @${agent.name}:")
@@ -862,6 +898,7 @@ class IDopenToolWindowPanel(private val project: Project) {
                 systemPromptOverride = systemPromptOverride,
                 modelOverride = modelOverride,
                 sourceLabel = "/${customCommand.name}",
+                modeOverride = modeOverride,
             ),
         )
     }
@@ -878,6 +915,7 @@ class IDopenToolWindowPanel(private val project: Project) {
             }
 
             SlashCommandId.QUOTA -> showChatGptQuotaDialog()
+            SlashCommandId.MODE -> handleSessionModeSlashAction(command)
             SlashCommandId.COMMANDS -> showProjectCommandsDialog()
             SlashCommandId.AGENTS -> handleProjectAgentsSlashAction(command)
             SlashCommandId.MCP -> showMcpInspectorDialog()
@@ -898,6 +936,41 @@ class IDopenToolWindowPanel(private val project: Project) {
             }
 
             else -> Unit
+        }
+    }
+
+    private fun handleSessionModeSlashAction(command: ParsedSlashCommand) {
+        val argument = command.argument.trim()
+        if (argument.isBlank()) {
+            Messages.showInfoMessage(
+                project,
+                SessionModeSupport.helpText(currentSnapshot.mode, currentLanguage()),
+                "IDopen",
+            )
+            return
+        }
+        val mode = SessionModeSupport.parse(argument)
+        if (mode == null) {
+            Messages.showWarningDialog(
+                project,
+                t(
+                    "未知会话模式：$argument\n可用值：general、plan、build、review。",
+                    "Unknown session mode: $argument\nAvailable values: general, plan, build, review.",
+                ),
+                "IDopen",
+            )
+            return
+        }
+        applySessionMode(mode)
+    }
+
+    private fun applySessionMode(mode: SessionMode) {
+        if (!service.setSessionMode(mode)) {
+            Messages.showWarningDialog(
+                project,
+                t("当前正在运行，停止后再切换会话模式。", "Stop the current run before switching the session mode."),
+                "IDopen",
+            )
         }
     }
 
@@ -990,6 +1063,7 @@ class IDopenToolWindowPanel(private val project: Project) {
         val providerType = ProviderType.fromStored(settings.providerType)
         val definition = ProviderDefinitionSupport.definition(providerType)
         val activeAgent = currentSnapshot.activeAgentName?.let { ProjectAgentSupport.find(currentProjectRoot(), it) }
+        val sessionMode = currentSnapshot.mode
         providerBadge.text = definition.shortLabel(language)
         trustModeCheckBox.isSelected = settings.trustMode
         unlimitedUsageCheckBox.isSelected = settings.unlimitedUsage
@@ -1005,6 +1079,18 @@ class IDopenToolWindowPanel(private val project: Project) {
             activeAgent != null -> t("当前项目 agent: @${activeAgent.name}\n$model", "Project agent: @${activeAgent.name}\n$model")
             else -> model
         }
+
+        modeBadge.text = SessionModeSupport.shortLabel(sessionMode, language)
+        modeBadge.toolTipText = buildString {
+            append(SessionModeSupport.label(sessionMode, language))
+            append("\n")
+            append(SessionModeSupport.description(sessionMode, language))
+        }
+        updatingModeSelector = true
+        modeSelector.selectedItem = sessionMode
+        modeSelector.toolTipText = SessionModeSupport.description(sessionMode, language)
+        modeSelector.repaint()
+        updatingModeSelector = false
 
         if (activeAgent != null) {
             agentBadge.isVisible = true
@@ -1145,6 +1231,22 @@ class IDopenToolWindowPanel(private val project: Project) {
         deleteConversationItem.isEnabled = !service.isRunning() && sessionSelector.itemCount > 0
         deleteConversationItem.addActionListener { confirmDeleteCurrentSession() }
         menu.add(deleteConversationItem)
+
+        menu.addSeparator()
+        val modeMenu = JMenu(t("会话模式", "Session mode"))
+        modeMenu.isEnabled = !service.isRunning()
+        val modeGroup = ButtonGroup()
+        SessionModeSupport.all().forEach { mode ->
+            val item = JRadioButtonMenuItem(
+                SessionModeSupport.label(mode, currentLanguage()),
+                currentSnapshot.mode == mode,
+            )
+            item.toolTipText = SessionModeSupport.description(mode, currentLanguage())
+            item.addActionListener { applySessionMode(mode) }
+            modeGroup.add(item)
+            modeMenu.add(item)
+        }
+        menu.add(modeMenu)
 
         menu.show(anchor, 0, anchor.height)
     }

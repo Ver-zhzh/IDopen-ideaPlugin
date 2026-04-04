@@ -66,6 +66,7 @@ class AgentSessionService(private val project: Project) {
                     updatedAt = persisted.updatedAt,
                     lastCapabilityNotice = persisted.lastCapabilityNotice,
                     activeProjectAgent = normalizeProjectAgentName(persisted.activeProjectAgent),
+                    mode = persisted.mode,
                 )
                 syncSessionSystemPrompt(sessions.getValue(persisted.id))
             }
@@ -179,6 +180,7 @@ class AgentSessionService(private val project: Project) {
                 entryCount = session.transcript.size,
                 running = currentRunSessionId == session.id && isRunning(),
                 activeAgentName = session.activeProjectAgent,
+                mode = session.mode,
             )
         }
     }
@@ -259,6 +261,27 @@ class AgentSessionService(private val project: Project) {
         return previous
     }
 
+    fun setSessionMode(mode: SessionMode): Boolean {
+        if (isRunning()) return false
+        val session = currentSession()
+        if (session.mode == mode) return true
+        session.mode = mode
+        syncSessionSystemPrompt(session)
+        appendEntry(
+            session,
+            TranscriptEntry.System(
+                id = nextId("system"),
+                message = SessionModeSupport.changedMessage(
+                    mode = mode,
+                    language = DisplayLanguage.fromStored(IDopenSettingsState.getInstance().displayLanguage),
+                ),
+            ),
+        )
+        emitEntryAdded(session, session.transcript.last())
+        emit(SessionEvent.SessionsChanged(getSessions(), activeSessionId))
+        return true
+    }
+
     fun isRunning(): Boolean = currentRun?.isDone == false
 
     private fun startRun(sessionId: String, roundId: String) {
@@ -316,6 +339,7 @@ class AgentSessionService(private val project: Project) {
                 userRequest = latestRoundUserText(session, roundId),
                 availableTools = toolDefinitions,
                 runtimeProfile = runtimeProfile,
+                sessionMode = session.mode,
             )
             val result = client.streamChat(
                 OpenAICompatibleClient.ChatRequest(
@@ -660,6 +684,7 @@ class AgentSessionService(private val project: Project) {
             steps = emptyList(),
             history = mutableListOf(),
             activeProjectAgent = null,
+            mode = SessionMode.GENERAL,
         )
         session.history += ConversationMessage.System(systemPrompt(session))
         session.transcript += TranscriptEntry.System(
@@ -779,6 +804,7 @@ class AgentSessionService(private val project: Project) {
             stepGroups = session.stepGroups.toList(),
             steps = session.steps.toList(),
             activeAgentName = session.activeProjectAgent,
+            mode = session.mode,
         )
     }
 
@@ -892,6 +918,7 @@ class AgentSessionService(private val project: Project) {
                     updatedAt = session.updatedAt,
                     lastCapabilityNotice = session.lastCapabilityNotice,
                     activeProjectAgent = session.activeProjectAgent,
+                    mode = session.mode,
                 )
             },
         )
@@ -923,6 +950,9 @@ class AgentSessionService(private val project: Project) {
                 appendLine("Follow these additional project-agent instructions exactly:")
                 appendLine(agent.prompt.trim())
             }
+            SessionModeSupport.systemPromptInstruction(session.mode)?.let { instruction ->
+                appendLine(instruction)
+            }
             appendLine("Safe read-only commands may run without approval, mutating commands require approval, and dangerous commands are blocked.")
             appendLine("You are connected through the configured provider API.")
             append("The user may write in Chinese. Reply in the user's language.")
@@ -941,6 +971,7 @@ class AgentSessionService(private val project: Project) {
         var updatedAt: Instant = Instant.now(),
         var lastCapabilityNotice: String? = null,
         var activeProjectAgent: String? = null,
+        var mode: SessionMode = SessionMode.GENERAL,
     )
 
     private data class PendingApproval(

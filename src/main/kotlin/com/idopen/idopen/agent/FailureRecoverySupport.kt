@@ -8,7 +8,7 @@ object FailureRecoverySupport {
     ): String? {
         val compactFailure = failureText.replace(Regex("\\s+"), " ").trim().take(220)
         return when (toolName) {
-            "mcp_list_servers" -> "The previous mcp_list_servers call failed. Re-check whether the project has .mcp.json or .claude/.mcp.json configuration before retrying. Failure: $compactFailure"
+            "mcp_list_servers" -> "The previous mcp_list_servers call failed. Re-check whether the project has .idopen/mcp.json configuration, or a legacy .mcp.json file, before retrying. Failure: $compactFailure"
             "mcp_describe_server" -> "The previous mcp_describe_server call failed. Use mcp_list_servers first, then retry with one exact server name. Failure: $compactFailure"
             "mcp_list_tools" -> "The previous mcp_list_tools call failed. Confirm the server uses a supported transport, then retry with one exact server name from mcp_list_servers. Failure: $compactFailure"
             "mcp_call_tool" -> "The previous mcp_call_tool call failed. Re-run mcp_list_tools, verify the exact tool name and schema, and narrow the arguments before retrying. Failure: $compactFailure"

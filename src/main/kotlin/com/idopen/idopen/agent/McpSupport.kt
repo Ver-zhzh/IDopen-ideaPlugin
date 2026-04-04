@@ -159,10 +159,13 @@ object McpSupport {
         val normalizedProjectRoot = projectRoot.toAbsolutePath().normalize()
         val normalizedUserHome = userHome.toAbsolutePath().normalize()
         return listOf(
-            McpConfigPath(normalizedUserHome.resolve(".claude.json"), McpScope.USER),
             McpConfigPath(normalizedUserHome.resolve(".claude").resolve(".mcp.json"), McpScope.USER),
-            McpConfigPath(normalizedProjectRoot.resolve(".mcp.json"), McpScope.PROJECT),
+            McpConfigPath(normalizedUserHome.resolve(".claude.json"), McpScope.USER),
+            McpConfigPath(normalizedUserHome.resolve(".idopen.json"), McpScope.USER),
+            McpConfigPath(normalizedUserHome.resolve(".idopen").resolve("mcp.json"), McpScope.USER),
             McpConfigPath(normalizedProjectRoot.resolve(".claude").resolve(".mcp.json"), McpScope.LOCAL),
+            McpConfigPath(normalizedProjectRoot.resolve(".mcp.json"), McpScope.PROJECT),
+            McpConfigPath(normalizedProjectRoot.resolve(".idopen").resolve("mcp.json"), McpScope.PROJECT),
         )
     }
 

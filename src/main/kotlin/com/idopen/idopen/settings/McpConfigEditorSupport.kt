@@ -76,7 +76,7 @@ object McpConfigEditorSupport {
 
     fun openUserConfig(project: Project, userHome: Path = defaultUserHome()): Path {
         val path = preferredUserConfigPath(userHome)
-        ensureConfigFile(path)
+        ensureUserConfigFile(userHome)
         openConfig(project, path)
         return path
     }
@@ -97,7 +97,20 @@ object McpConfigEditorSupport {
     }
 
     fun loadUserConfig(userHome: Path = defaultUserHome()): McpConfigDocument {
-        return loadConfig(preferredUserConfigPath(userHome))
+        val preferredPath = preferredUserConfigPath(userHome)
+        if (Files.isRegularFile(preferredPath)) {
+            return loadConfig(preferredPath)
+        }
+        val legacySource = legacyUserConfigPaths(userHome).firstOrNull { Files.isRegularFile(it) }
+        return if (legacySource != null) {
+            McpConfigDocument(
+                path = preferredPath,
+                text = Files.readString(legacySource),
+                existed = false,
+            )
+        } else {
+            loadConfig(preferredPath)
+        }
     }
 
     fun loadProjectConfig(projectRoot: Path): McpConfigDocument {
@@ -108,6 +121,10 @@ object McpConfigEditorSupport {
         val normalized = prettyPrintValidatedConfig(text)
         path.parent?.let { Files.createDirectories(it) }
         Files.writeString(path, normalized)
+    }
+
+    fun formatConfigText(text: String): String {
+        return prettyPrintValidatedConfig(text)
     }
 
     fun validateConfigText(text: String): McpConfigValidation {
@@ -170,22 +187,18 @@ object McpConfigEditorSupport {
 
     internal fun preferredUserConfigPath(userHome: Path): Path {
         val normalizedHome = userHome.toAbsolutePath().normalize()
-        val primary = normalizedHome.resolve(".claude.json")
-        val secondary = normalizedHome.resolve(".claude").resolve(".mcp.json")
-        return when {
-            Files.isRegularFile(primary) -> primary
-            Files.isRegularFile(secondary) -> secondary
-            else -> primary
-        }
+        return normalizedHome.resolve(".idopen").resolve("mcp.json")
     }
 
     internal fun preferredProjectConfigPath(projectRoot: Path): Path {
         val normalizedRoot = projectRoot.toAbsolutePath().normalize()
-        val primary = normalizedRoot.resolve(".mcp.json")
-        val secondary = normalizedRoot.resolve(".claude").resolve(".mcp.json")
+        val primary = normalizedRoot.resolve(".idopen").resolve("mcp.json")
+        val secondary = normalizedRoot.resolve(".mcp.json")
+        val legacy = normalizedRoot.resolve(".claude").resolve(".mcp.json")
         return when {
             Files.isRegularFile(primary) -> primary
             Files.isRegularFile(secondary) -> secondary
+            Files.isRegularFile(legacy) -> legacy
             else -> primary
         }
     }
@@ -194,6 +207,15 @@ object McpConfigEditorSupport {
         if (Files.isRegularFile(path)) return
         path.parent?.let { Files.createDirectories(it) }
         Files.writeString(path, emptyTemplate())
+    }
+
+    internal fun ensureUserConfigFile(userHome: Path) {
+        val preferredPath = preferredUserConfigPath(userHome)
+        if (Files.isRegularFile(preferredPath)) return
+        val legacySource = legacyUserConfigPaths(userHome).firstOrNull { Files.isRegularFile(it) }
+        preferredPath.parent?.let { Files.createDirectories(it) }
+        val content = legacySource?.let { Files.readString(it) } ?: emptyTemplate()
+        Files.writeString(preferredPath, content)
     }
 
     internal fun loadConfig(path: Path): McpConfigDocument {
@@ -221,6 +243,15 @@ object McpConfigEditorSupport {
 
     private fun prettyJson(value: Any): String {
         return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(value) + System.lineSeparator()
+    }
+
+    private fun legacyUserConfigPaths(userHome: Path): List<Path> {
+        val normalizedHome = userHome.toAbsolutePath().normalize()
+        return listOf(
+            normalizedHome.resolve(".idopen.json"),
+            normalizedHome.resolve(".claude.json"),
+            normalizedHome.resolve(".claude").resolve(".mcp.json"),
+        )
     }
 
     private fun defaultUserHome(): Path {

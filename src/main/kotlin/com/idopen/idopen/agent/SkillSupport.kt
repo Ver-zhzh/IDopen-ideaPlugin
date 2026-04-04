@@ -18,6 +18,8 @@ object SkillSupport {
         ".agents/skills",
         ".config/opencode/skill",
         ".config/opencode/skills",
+        ".idopen/skill",
+        ".idopen/skills",
     )
 
     private val projectSkillRoots = listOf(
@@ -25,6 +27,8 @@ object SkillSupport {
         ".agents/skills",
         ".opencode/skill",
         ".opencode/skills",
+        ".idopen/skill",
+        ".idopen/skills",
     )
 
     fun available(projectRoot: Path): List<LoadedSkill> {

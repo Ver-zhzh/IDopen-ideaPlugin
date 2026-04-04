@@ -1,5 +1,7 @@
 package com.idopen.idopen.toolwindow
 
+import com.idopen.idopen.agent.SessionMode
+import com.idopen.idopen.agent.SessionModeSupport
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Comparator
@@ -10,6 +12,7 @@ internal data class LoadedProjectSlashCommand(
     val argumentHint: String?,
     val agent: String?,
     val model: String?,
+    val mode: SessionMode?,
     val path: Path,
     val template: String,
 )
@@ -18,12 +21,16 @@ internal object ProjectSlashCommandSupport {
     private val globalCommandRoots = listOf(
         ".config/opencode/command",
         ".config/opencode/commands",
+        ".idopen/command",
+        ".idopen/commands",
     )
 
     private val projectCommandRoots = listOf(
+        ".claude/commands",
         ".opencode/command",
         ".opencode/commands",
-        ".claude/commands",
+        ".idopen/command",
+        ".idopen/commands",
     )
 
     fun available(projectRoot: Path): List<LoadedProjectSlashCommand> {
@@ -57,6 +64,7 @@ internal object ProjectSlashCommandSupport {
                     command.argumentHint?.let { appendLine("  argument-hint: $it") }
                     command.agent?.let { appendLine("  agent: $it") }
                     command.model?.let { appendLine("  model: $it") }
+                    command.mode?.let { appendLine("  mode: ${it.name.lowercase()}") }
                     appendLine("  path: ${relativeToProject(projectRoot, command.path)}")
                 }
             }
@@ -108,6 +116,7 @@ internal object ProjectSlashCommandSupport {
             argumentHint = metadata["argument-hint"]?.takeIf { it.isNotBlank() }?.trim(),
             agent = metadata["agent"]?.takeIf { it.isNotBlank() }?.trim(),
             model = metadata["model"]?.takeIf { it.isNotBlank() }?.trim(),
+            mode = metadata["mode"]?.let(SessionModeSupport::parse),
             path = path.toAbsolutePath().normalize(),
             template = template,
         )

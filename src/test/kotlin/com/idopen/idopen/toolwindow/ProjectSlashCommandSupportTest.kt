@@ -16,7 +16,7 @@ class ProjectSlashCommandSupportTest {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-project-commands")
             try {
-                val commandDir = projectRoot.resolve(".opencode/commands/quality")
+                val commandDir = projectRoot.resolve(".idopen/commands/quality")
                 commandDir.createDirectories()
                 commandDir.resolve("review.md").writeText(
                     """
@@ -46,21 +46,21 @@ class ProjectSlashCommandSupportTest {
     }
 
     @Test
-    fun `later project command roots override earlier roots with the same name`() {
+    fun `idopen project command roots override earlier legacy roots with the same name`() {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-project-commands-priority")
             try {
                 val opencodeDir = projectRoot.resolve(".opencode/commands")
-                val claudeDir = projectRoot.resolve(".claude/commands")
+                val idopenDir = projectRoot.resolve(".idopen/commands")
                 opencodeDir.createDirectories()
-                claudeDir.createDirectories()
+                idopenDir.createDirectories()
                 opencodeDir.resolve("review.md").writeText("Opencode review template")
-                claudeDir.resolve("review.md").writeText(
+                idopenDir.resolve("review.md").writeText(
                     """
                     ---
-                    description: Claude review command
+                    description: IDopen review command
                     ---
-                    Claude review template
+                    IDopen review template
                     """.trimIndent(),
                 )
 
@@ -68,8 +68,8 @@ class ProjectSlashCommandSupportTest {
 
                 assertEquals(1, commands.size)
                 assertEquals("review", commands.first().name)
-                assertEquals("Claude review command", commands.first().description)
-                assertTrue(commands.first().template.contains("Claude review template"))
+                assertEquals("IDopen review command", commands.first().description)
+                assertTrue(commands.first().template.contains("IDopen review template"))
             } finally {
                 deleteTree(projectRoot)
             }
@@ -81,7 +81,7 @@ class ProjectSlashCommandSupportTest {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-project-commands-format")
             try {
-                val commandDir = projectRoot.resolve(".opencode/commands")
+                val commandDir = projectRoot.resolve(".idopen/commands")
                 commandDir.createDirectories()
                 commandDir.resolve("fix.md").writeText(
                     """
@@ -101,7 +101,7 @@ class ProjectSlashCommandSupportTest {
                 assertTrue(details.contains("argument-hint: bug-id"))
                 assertTrue(details.contains("agent: build"))
                 assertTrue(details.contains("model: gpt-5.4"))
-                assertTrue(details.contains(".opencode/commands/fix.md"))
+                assertTrue(details.contains(".idopen/commands/fix.md"))
             } finally {
                 deleteTree(projectRoot)
             }
@@ -113,7 +113,7 @@ class ProjectSlashCommandSupportTest {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-project-commands-find")
             try {
-                val commandDir = projectRoot.resolve(".opencode/commands")
+                val commandDir = projectRoot.resolve(".idopen/commands")
                 commandDir.createDirectories()
                 commandDir.resolve("Review.md").writeText(
                     """
@@ -157,7 +157,7 @@ class ProjectSlashCommandSupportTest {
 
             val projectRoot = Files.createTempDirectory("idopen-project-commands-global")
             try {
-                val projectDir = projectRoot.resolve(".opencode/commands")
+                val projectDir = projectRoot.resolve(".idopen/commands")
                 projectDir.createDirectories()
                 projectDir.resolve("review.md").writeText(
                     """

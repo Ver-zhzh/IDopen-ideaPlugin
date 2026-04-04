@@ -14,6 +14,7 @@ internal enum class SlashCommandId {
     DELETE,
     SETTINGS,
     QUOTA,
+    MODE,
     COMMANDS,
     AGENTS,
     MCP,
@@ -135,6 +136,17 @@ internal object SlashCommandSupport {
             enSummary = "Check ChatGPT quota",
             zhDescription = "查询当前 ChatGPT 套餐和额度窗口。",
             enDescription = "Check the current ChatGPT plan and quota windows.",
+        ),
+        SlashCommandDefinition(
+            id = SlashCommandId.MODE,
+            name = "mode",
+            kind = SlashCommandKind.ACTION,
+            aliases = listOf("modes", "profile"),
+            zhSummary = "切换会话模式",
+            enSummary = "Switch session mode",
+            zhDescription = "查看或切换当前会话模式：general、plan、build、review。",
+            enDescription = "Inspect or switch the current session mode: general, plan, build, or review.",
+            argumentHint = "general|plan|build|review",
         ),
         SlashCommandDefinition(
             id = SlashCommandId.COMMANDS,
@@ -482,6 +494,7 @@ internal object SlashCommandSupport {
                 command.argumentHint?.let { add("args: $it") }
                 command.agent?.let { add("agent: $it") }
                 command.model?.let { add("model: $it") }
+                command.mode?.let { add("mode: ${it.name.lowercase()}") }
                 add("path: ${projectRoot.relativize(command.path).toString().replace('\\', '/')}")
             }.joinToString(" | ")
             SlashCommandDefinition(

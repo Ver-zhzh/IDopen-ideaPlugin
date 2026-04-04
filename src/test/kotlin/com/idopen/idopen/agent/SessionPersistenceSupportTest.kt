@@ -67,6 +67,7 @@ class SessionPersistenceSupportTest {
                 updatedAt = now,
                 lastCapabilityNotice = "fallback",
                 activeProjectAgent = "review/security",
+                mode = SessionMode.REVIEW,
             ),
         )
 
@@ -80,6 +81,7 @@ class SessionPersistenceSupportTest {
         assertEquals(SessionTodoStatus.IN_PROGRESS, decoded.sessions.first().todos.first().status)
         assertEquals("fallback", decoded.sessions.first().lastCapabilityNotice)
         assertEquals("review/security", decoded.sessions.first().activeProjectAgent)
+        assertEquals(SessionMode.REVIEW, decoded.sessions.first().mode)
         assertIs<TranscriptEntry.StepStart>(decoded.sessions.first().transcript[2])
         assertIs<TranscriptEntry.Assistant>(decoded.sessions.first().transcript[3])
         assertEquals("round-1", decoded.sessions.first().transcript[3].roundId)

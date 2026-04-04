@@ -8,6 +8,7 @@ data class LoadedProjectAgent(
     val name: String,
     val description: String,
     val model: String?,
+    val mode: SessionMode?,
     val path: Path,
     val prompt: String,
 )
@@ -16,13 +17,17 @@ object ProjectAgentSupport {
     private val globalAgentRoots = listOf(
         ".config/opencode/agent",
         ".config/opencode/agents",
+        ".idopen/agent",
+        ".idopen/agents",
     )
 
     private val projectAgentRoots = listOf(
-        ".opencode/agent",
-        ".opencode/agents",
         ".claude/agents",
         ".agents",
+        ".opencode/agent",
+        ".opencode/agents",
+        ".idopen/agent",
+        ".idopen/agents",
     )
 
     fun available(projectRoot: Path): List<LoadedProjectAgent> {
@@ -54,6 +59,7 @@ object ProjectAgentSupport {
                 appendLine(agent.description)
                 if (verbose) {
                     agent.model?.let { appendLine("  model: $it") }
+                    agent.mode?.let { appendLine("  mode: ${it.name.lowercase()}") }
                     appendLine("  path: ${relativeToProject(projectRoot, agent.path)}")
                 }
             }
@@ -103,6 +109,7 @@ object ProjectAgentSupport {
             name = relativeName,
             description = description.trim(),
             model = metadata["model"]?.takeIf { it.isNotBlank() }?.trim(),
+            mode = metadata["mode"]?.let(SessionModeSupport::parse),
             path = path.toAbsolutePath().normalize(),
             prompt = prompt,
         )

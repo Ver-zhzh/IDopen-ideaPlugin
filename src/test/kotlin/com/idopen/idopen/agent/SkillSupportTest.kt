@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
 
 class SkillSupportTest {
     @Test
-    fun `available prefers opencode skills over legacy directories`() {
+    fun `available prefers idopen skills over legacy directories`() {
         withFakeHome {
             val root = Files.createTempDirectory("idopen-skill-test")
             try {
@@ -26,7 +26,7 @@ class SkillSupportTest {
                     """.trimIndent(),
                 )
                 writeSkill(
-                    root.resolve(".opencode/skills/review/SKILL.md"),
+                    root.resolve(".idopen/skills/review/SKILL.md"),
                     """
                     ---
                     name: review
@@ -36,7 +36,7 @@ class SkillSupportTest {
                     """.trimIndent(),
                 )
                 writeSkill(
-                    root.resolve(".opencode/skills/debug/SKILL.md"),
+                    root.resolve(".idopen/skills/debug/SKILL.md"),
                     """
                     Inspect runtime logs before changing code.
                     Read the failing path, then narrow the scope.
@@ -59,7 +59,7 @@ class SkillSupportTest {
         withFakeHome {
             val root = Files.createTempDirectory("idopen-skill-load")
             try {
-                val skillDir = root.resolve(".opencode/skills/release")
+                val skillDir = root.resolve(".idopen/skills/release")
                 writeSkill(
                     skillDir.resolve("SKILL.md"),
                     """
@@ -78,7 +78,7 @@ class SkillSupportTest {
                 assertTrue(result.success)
                 assertTrue(result.content.contains("<skill_content name=\"release-check\">"))
                 assertTrue(result.content.contains("verify release steps"))
-                assertTrue(result.content.contains(".opencode/skills/release/scripts/check.ps1"))
+                assertTrue(result.content.contains(".idopen/skills/release/scripts/check.ps1"))
             } finally {
                 deleteTree(root)
             }
@@ -128,7 +128,7 @@ class SkillSupportTest {
             val root = Files.createTempDirectory("idopen-skill-global")
             try {
                 writeSkill(
-                    root.resolve(".opencode/skills/review/SKILL.md"),
+                    root.resolve(".idopen/skills/review/SKILL.md"),
                     """
                     ---
                     name: review

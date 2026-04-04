@@ -211,4 +211,44 @@ class AgentPlanningSupportTest {
         assertTrue(plan.planningNotes.any { it.contains("reference context") })
         assertTrue(plan.planningNotes.any { it.contains("prompt templates") })
     }
+
+    @Test
+    fun `review mode adds review focused notes and avoids execution bias`() {
+        val snapshot = ChatSessionSnapshot(
+            sessionId = "session-1",
+            title = "test",
+            updatedAt = Instant.parse("2026-03-14T08:00:00Z"),
+            running = false,
+            todos = emptyList(),
+            transcript = emptyList(),
+            stepGroups = emptyList(),
+            steps = emptyList(),
+            mode = SessionMode.REVIEW,
+        )
+
+        val plan = AgentPlanningSupport.buildPlan(
+            snapshot = snapshot,
+            roundId = "round-5",
+            userRequest = "Review the auth module for bugs and missing tests",
+            availableTools = listOf(
+                ToolDefinition("read_project_tree", "", emptyMap()),
+                ToolDefinition("search_text", "", emptyMap()),
+                ToolDefinition("read_file", "", emptyMap()),
+                ToolDefinition("apply_patch_preview", "", emptyMap()),
+                ToolDefinition("run_command", "", emptyMap()),
+            ),
+            runtimeProfile = ProviderRuntimeProfile(
+                config = ProviderConfig(ProviderType.OPENAI_COMPATIBLE, "https://example.com/v1", "key", "qwen", emptyMap()),
+                supportsToolCalling = true,
+                effectiveToolMode = ToolCallingMode.ENABLED,
+                includeTools = true,
+            ),
+            sessionMode = SessionMode.REVIEW,
+        )
+
+        assertTrue(plan.recommendedTools.contains("read_file"))
+        assertTrue(plan.recommendedTools.contains("search_text"))
+        assertTrue(plan.planningNotes.any { it.contains("Current session mode is review") })
+        assertTrue(plan.planningNotes.any { it.contains("Avoid making edits") })
+    }
 }

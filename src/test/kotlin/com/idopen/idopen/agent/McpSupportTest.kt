@@ -38,7 +38,7 @@ class McpSupportTest {
                 """.trimIndent(),
             )
             writeJson(
-                projectRoot.resolve(".claude").resolve(".mcp.json"),
+                projectRoot.resolve(".idopen").resolve("mcp.json"),
                 """
                 {
                   "mcpServers": {
@@ -51,7 +51,7 @@ class McpSupportTest {
             val servers = McpSupport.available(projectRoot, userHome)
 
             assertEquals(listOf("memory", "playwright", "sqlite"), servers.map { it.name })
-            assertEquals(McpScope.LOCAL, servers.first { it.name == "playwright" }.scope)
+            assertEquals(McpScope.PROJECT, servers.first { it.name == "playwright" }.scope)
             assertEquals(listOf("@playwright/mcp@latest"), servers.first { it.name == "playwright" }.args)
             assertEquals("1", servers.first { it.name == "playwright" }.env["DEBUG"])
         } finally {
@@ -66,7 +66,7 @@ class McpSupportTest {
         val userHome = Files.createTempDirectory("idopen-mcp-home-describe")
         try {
             writeJson(
-                projectRoot.resolve(".mcp.json"),
+                projectRoot.resolve(".idopen").resolve("mcp.json"),
                 """
                 {
                   "mcpServers": {
@@ -88,7 +88,7 @@ class McpSupportTest {
             assertTrue(result.content.contains("Transport: http"))
             assertTrue(result.content.contains("Header keys: Authorization"))
             assertTrue(result.content.contains("OAuth scopes: docs.read, docs.search"))
-            assertTrue(result.content.contains(".mcp.json"))
+            assertTrue(result.content.contains(".idopen/mcp.json"))
             assertEquals(listOf("remote-docs"), McpSupport.available(projectRoot, userHome).map { it.name })
         } finally {
             deleteTree(projectRoot)

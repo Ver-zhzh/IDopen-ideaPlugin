@@ -47,14 +47,16 @@ object AgentPlanningSupport {
         userRequest: String,
         availableTools: List<ToolDefinition>,
         runtimeProfile: ProviderRuntimeProfile,
+        sessionMode: SessionMode = SessionMode.GENERAL,
     ): AgentTurnPlan {
         val subtasks = splitSubtasks(userRequest)
-        val recommendedTools = recommendTools(userRequest, availableTools)
+        val recommendedTools = recommendTools(userRequest, availableTools, sessionMode)
         val lastFailedStep = snapshot.steps
             .filter { it.roundId != roundId }
             .lastOrNull { it.status == SessionStepStatus.FAILED }
         val recoveryHint = lastFailedStep?.let(::extractRecoveryHint)
         val planningNotes = buildList {
+            addAll(SessionModeSupport.planningNotes(sessionMode))
             if (!runtimeProfile.includeTools) {
                 add("Tool calling is unavailable for the current model, so prefer direct analysis over tool-dependent plans.")
             }
@@ -133,11 +135,14 @@ object AgentPlanningSupport {
     private fun recommendTools(
         userRequest: String,
         availableTools: List<ToolDefinition>,
+        sessionMode: SessionMode,
     ): List<String> {
         if (availableTools.isEmpty()) return emptyList()
         val normalized = userRequest.lowercase()
         val subtaskCount = splitSubtasks(userRequest).size
         val recommendations = linkedSetOf<String>()
+
+        recommendations += SessionModeSupport.recommendedTools(sessionMode)
 
         if (subtaskCount >= 2 || normalized.contains("todo") || normalized.contains("task") || normalized.contains("plan")) {
             recommendations += "todo_write"

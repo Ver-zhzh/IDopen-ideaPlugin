@@ -54,6 +54,17 @@ class SlashCommandSupportTest {
     }
 
     @Test
+    fun `mode action is available in suggestions and parsing`() {
+        val suggestions = SlashCommandSupport.suggestions("/mo")
+        val parsed = SlashCommandSupport.parse("/mode review")
+
+        assertTrue(suggestions.any { it.id == SlashCommandId.MODE })
+        assertNotNull(parsed)
+        assertEquals(SlashCommandId.MODE, parsed.definition.id)
+        assertEquals("review", parsed.argument)
+    }
+
+    @Test
     fun `agents action is available in suggestions and parsing`() {
         val suggestions = SlashCommandSupport.suggestions("/ag")
         val parsed = SlashCommandSupport.parse("/agents")
@@ -118,7 +129,7 @@ class SlashCommandSupportTest {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-slash-custom")
             try {
-                val commandDir = projectRoot.resolve(".opencode/commands")
+                val commandDir = projectRoot.resolve(".idopen/commands")
                 commandDir.createDirectories()
                 commandDir.resolve("review.md").writeText(
                     """

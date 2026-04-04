@@ -14,6 +14,7 @@ data class PersistedSessionState(
     val updatedAt: Instant,
     val lastCapabilityNotice: String? = null,
     val activeProjectAgent: String? = null,
+    val mode: SessionMode = SessionMode.GENERAL,
 )
 
 data class RestoredSessions(
@@ -62,6 +63,7 @@ object SessionPersistenceSupport {
             put("updatedAt", session.updatedAt.toEpochMilli())
             session.lastCapabilityNotice?.let { put("lastCapabilityNotice", it) }
             session.activeProjectAgent?.let { put("activeProjectAgent", it) }
+            put("mode", session.mode.name)
             putArray("todos").apply {
                 session.todos.forEach { add(serializeTodoItem(it)) }
             }
@@ -87,6 +89,7 @@ object SessionPersistenceSupport {
             updatedAt = Instant.ofEpochMilli(node.path("updatedAt").asLong(Instant.now().toEpochMilli())),
             lastCapabilityNotice = node.path("lastCapabilityNotice").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
             activeProjectAgent = node.path("activeProjectAgent").takeIf { !it.isMissingNode && !it.isNull }?.asText(),
+            mode = SessionMode.fromStored(node.path("mode").takeIf { !it.isMissingNode && !it.isNull }?.asText()),
         )
     }
 

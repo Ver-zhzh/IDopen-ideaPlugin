@@ -16,7 +16,7 @@ class ProjectAgentSupportTest {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-project-agents")
             try {
-                val agentDir = projectRoot.resolve(".opencode/agents/review")
+                val agentDir = projectRoot.resolve(".idopen/agents/review")
                 agentDir.createDirectories()
                 agentDir.resolve("security.md").writeText(
                     """
@@ -42,21 +42,21 @@ class ProjectAgentSupportTest {
     }
 
     @Test
-    fun `later roots override earlier roots with the same agent name`() {
+    fun `idopen project agent roots override earlier legacy roots with the same agent name`() {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-project-agents-priority")
             try {
                 val opencodeDir = projectRoot.resolve(".opencode/agents")
-                val claudeDir = projectRoot.resolve(".claude/agents")
+                val idopenDir = projectRoot.resolve(".idopen/agents")
                 opencodeDir.createDirectories()
-                claudeDir.createDirectories()
+                idopenDir.createDirectories()
                 opencodeDir.resolve("reviewer.md").writeText("Opencode reviewer")
-                claudeDir.resolve("reviewer.md").writeText(
+                idopenDir.resolve("reviewer.md").writeText(
                     """
                     ---
-                    description: Claude reviewer
+                    description: IDopen reviewer
                     ---
-                    Claude reviewer prompt
+                    IDopen reviewer prompt
                     """.trimIndent(),
                 )
 
@@ -64,8 +64,8 @@ class ProjectAgentSupportTest {
 
                 assertEquals(1, agents.size)
                 assertEquals("reviewer", agents.first().name)
-                assertEquals("Claude reviewer", agents.first().description)
-                assertTrue(agents.first().prompt.contains("Claude reviewer prompt"))
+                assertEquals("IDopen reviewer", agents.first().description)
+                assertTrue(agents.first().prompt.contains("IDopen reviewer prompt"))
             } finally {
                 deleteTree(projectRoot)
             }
@@ -106,7 +106,7 @@ class ProjectAgentSupportTest {
         withFakeHome {
             val projectRoot = Files.createTempDirectory("idopen-project-agents-find")
             try {
-                val agentDir = projectRoot.resolve(".opencode/agents")
+                val agentDir = projectRoot.resolve(".idopen/agents")
                 agentDir.createDirectories()
                 agentDir.resolve("Planner.md").writeText(
                     """
@@ -147,7 +147,7 @@ class ProjectAgentSupportTest {
 
             val projectRoot = Files.createTempDirectory("idopen-project-agents-global")
             try {
-                val projectDir = projectRoot.resolve(".opencode/agents")
+                val projectDir = projectRoot.resolve(".idopen/agents")
                 projectDir.createDirectories()
                 projectDir.resolve("planner.md").writeText(
                     """
