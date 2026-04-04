@@ -31,6 +31,7 @@ object ChatGptAuthSupport {
     private const val OAUTH_PORT = 1455
     private const val CALLBACK_PATH = "/auth/callback"
     private const val CALLBACK_TIMEOUT_MINUTES = 5L
+    private const val DEVICE_AUTH_TIMEOUT_MINUTES = 10L
     private const val TOKEN_REFRESH_MARGIN_MS = 5_000L
     private const val DEVICE_AUTH_POLLING_SAFETY_MARGIN_MS = 3_000L
     private const val IDOPEN_USER_AGENT = "opencode/idopen-ideaPlugin"
@@ -43,6 +44,10 @@ object ChatGptAuthSupport {
     private val httpClient: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(30))
         .build()
+    @Volatile
+    internal var sleep: (Long) -> Unit = { Thread.sleep(it) }
+    @Volatile
+    internal var currentTimeMillis: () -> Long = { System.currentTimeMillis() }
 
     data class OAuthTokens(
         val accessToken: String,
@@ -194,7 +199,12 @@ object ChatGptAuthSupport {
         session: DeviceAuthorizationSession,
         settings: IDopenSettingsState = IDopenSettingsState.getInstance(),
     ): ChatGptAuthStatus {
+        val deadline = currentTimeMillis() + TimeUnit.MINUTES.toMillis(DEVICE_AUTH_TIMEOUT_MINUTES)
+        var pollingIntervalMs = session.intervalMs + DEVICE_AUTH_POLLING_SAFETY_MARGIN_MS
         while (true) {
+            if (currentTimeMillis() >= deadline) {
+                error("ChatGPT device login timed out. Start the device-code flow again and complete the browser approval before retrying.")
+            }
             val request = HttpRequest.newBuilder()
                 .uri(URI.create("$ISSUER/api/accounts/deviceauth/token"))
                 .timeout(Duration.ofSeconds(30))
@@ -234,12 +244,51 @@ object ChatGptAuthSupport {
                 return persistTokens(settings, tokens)
             }
 
-            if (response.statusCode() != 403 && response.statusCode() != 404) {
-                error("Device authorization failed: HTTP ${response.statusCode()} ${response.body().take(400)}")
+            val pollingState = parseDeviceAuthorizationPollingState(response.body())
+            when {
+                response.statusCode() in listOf(403, 404) && pollingState in pendingPollingStates() -> Unit
+                response.statusCode() in listOf(403, 404) && pollingState in terminalPollingStates() -> {
+                    error("ChatGPT device login failed: ${pollingState ?: "authorization expired or was denied"}.")
+                }
+                response.statusCode() == 429 || pollingState == "slow_down" -> {
+                    pollingIntervalMs += session.intervalMs
+                }
+                response.statusCode() !in listOf(403, 404) -> {
+                    error("Device authorization failed: HTTP ${response.statusCode()} ${response.body().take(400)}")
+                }
+                else -> {
+                    error("Device authorization failed: ${response.body().take(400)}")
+                }
             }
 
-            Thread.sleep(session.intervalMs + DEVICE_AUTH_POLLING_SAFETY_MARGIN_MS)
+            if (currentTimeMillis() + pollingIntervalMs >= deadline) {
+                error("ChatGPT device login timed out. Start the device-code flow again and complete the browser approval before retrying.")
+            }
+
+            runCatching { sleep(pollingIntervalMs) }.getOrElse { exception ->
+                if (exception is InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    error("ChatGPT device login was interrupted.")
+                }
+                throw exception
+            }
         }
+    }
+
+    internal fun parseDeviceAuthorizationPollingState(responseBody: String): String? {
+        val root = runCatching { mapper.readTree(responseBody) }.getOrNull() ?: return null
+        return listOf("error", "state", "status")
+            .asSequence()
+            .map { field -> root.path(field).asText("").trim().lowercase() }
+            .firstOrNull { it.isNotBlank() }
+    }
+
+    private fun pendingPollingStates(): Set<String> {
+        return setOf("authorization_pending", "pending", "waiting", "not_found")
+    }
+
+    private fun terminalPollingStates(): Set<String> {
+        return setOf("access_denied", "authorization_declined", "expired_token", "expired", "device_code_expired")
     }
 
     fun openVerificationUrl(url: String) {
@@ -254,7 +303,7 @@ object ChatGptAuthSupport {
         if (config.type != ProviderType.CHATGPT_AUTH) return config
         val expiresAt = config.accessTokenExpiresAt ?: 0L
         val accessToken = config.apiKey.trim().ifBlank { settings.chatGptAccessToken.trim() }
-        if (accessToken.isNotBlank() && expiresAt > System.currentTimeMillis() + TOKEN_REFRESH_MARGIN_MS) {
+        if (accessToken.isNotBlank() && expiresAt > currentTimeMillis() + TOKEN_REFRESH_MARGIN_MS) {
             return config.copy(
                 apiKey = accessToken,
                 refreshToken = config.refreshToken ?: settings.chatGptRefreshToken.ifBlank { null },
@@ -384,7 +433,7 @@ object ChatGptAuthSupport {
         return OAuthTokens(
             accessToken = accessToken,
             refreshToken = refreshToken,
-            expiresAt = System.currentTimeMillis() + expiresIn * 1000L,
+            expiresAt = currentTimeMillis() + expiresIn * 1000L,
             idToken = root.path("id_token").asText("").ifBlank { null },
         )
     }

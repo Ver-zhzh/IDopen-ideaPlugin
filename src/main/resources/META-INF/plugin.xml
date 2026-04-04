@@ -1,28 +1,16 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
     <id>com.IDopen.IDopen</id>
-
-    <!-- Public plugin name should be written in Title Case.
-         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
     <name>IDopen</name>
-
-    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
     <vendor>YTAddon</vendor>
 
-    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
-         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
     <description><![CDATA[
-    IDopen 是一个面向 IntelliJ IDEA 系列 IDE 的智能编码助手插件。<br>
-    它将类 OpenCode 的 Agent 能力直接集成到 IDE 内，提供对话式协作、项目上下文读取、工具调用、补丁预览、MCP 接入与会话管理等能力。
+    IDopen is an IntelliJ IDEA coding assistant plugin that brings an agent-style workflow directly into the IDE.<br>
+    It provides project-aware chat, file reading, tool calling, patch preview, MCP integration, and session management in a native tool window.
   ]]></description>
 
-    <!-- Product and plugin compatibility requirements.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
     <depends>com.intellij.modules.platform</depends>
 
-    <!-- Extension points defined by the plugin.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow
                 id="IDopen"

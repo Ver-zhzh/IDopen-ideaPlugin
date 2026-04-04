@@ -44,6 +44,13 @@ class IDopenMcpConfigurable : Configurable {
         private val LOG = Logger.getInstance(IDopenMcpConfigurable::class.java)
     }
 
+    private data class ProjectChoice(
+        val project: Project?,
+        val label: String,
+    ) {
+        override fun toString(): String = label
+    }
+
     private enum class McpTarget {
         USER,
         PROJECT,
@@ -65,6 +72,7 @@ class IDopenMcpConfigurable : Configurable {
     private val overviewPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(12), JBUI.scale(12)))
 
     private val targetField = JComboBox(arrayOf(McpTarget.USER, McpTarget.PROJECT))
+    private val projectField = JComboBox<ProjectChoice>()
     private val saveButton = JButton()
     private val validateButton = JButton()
     private val reloadButton = JButton()
@@ -82,6 +90,7 @@ class IDopenMcpConfigurable : Configurable {
     private lateinit var contentSplit: JSplitPane
     private lateinit var editorCard: JComponent
     private lateinit var serversCard: JComponent
+    private var selectedProjectPath: String? = null
 
     override fun getDisplayName(): String = "IDopen MCP"
 
@@ -243,6 +252,20 @@ class IDopenMcpConfigurable : Configurable {
                 return component
             }
         }
+        projectField.preferredSize = Dimension(JBUI.scale(280), projectField.preferredSize.height)
+        projectField.renderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean,
+            ): Component {
+                val component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                text = (value as? ProjectChoice)?.label ?: "Select project"
+                return component
+            }
+        }
     }
 
     private fun createEditorField(document: Document): EditorTextField {
@@ -318,6 +341,10 @@ class IDopenMcpConfigurable : Configurable {
 
     private fun bindActions() {
         targetField.addActionListener { loadSelectedTarget() }
+        projectField.addActionListener {
+            selectedProjectPath = selectedProjectChoice()?.project?.basePath?.trim()?.takeIf { it.isNotBlank() }
+            refreshView(loadEditor = true)
+        }
         reloadButton.addActionListener { loadSelectedTarget() }
         validateButton.addActionListener {
             val validation = runCatching { McpConfigEditorSupport.validateConfigText(currentEditorText()) }
@@ -420,6 +447,8 @@ class IDopenMcpConfigurable : Configurable {
             isOpaque = false
             add(JBLabel(t("编辑目标", "Target")))
             add(targetField)
+            add(JBLabel("Project"))
+            add(projectField)
             add(reloadButton)
             add(validateButton)
             add(saveButton)
@@ -498,6 +527,7 @@ class IDopenMcpConfigurable : Configurable {
     }
 
     private fun refreshView(loadEditor: Boolean) {
+        refreshProjectChoices()
         val userHome = Path.of(System.getProperty("user.home", ".")).toAbsolutePath().normalize()
         val userPath = McpConfigEditorSupport.preferredUserConfigPath(userHome)
         userConfigPathArea.text = userPath.toDisplayString()
@@ -515,9 +545,6 @@ class IDopenMcpConfigurable : Configurable {
                 "当前仍可维护用户级 MCP 配置；项目级配置会在打开项目后自动生效。",
                 "You can still maintain the user-scoped MCP config. Project-scoped config becomes available once a project is opened.",
             )
-            if (selectedTarget() == McpTarget.PROJECT) {
-                targetField.selectedItem = McpTarget.USER
-            }
         } else {
             val projectPath = McpConfigEditorSupport.preferredProjectConfigPath(projectRoot)
             projectConfigPathArea.text = projectPath.toDisplayString()
@@ -727,11 +754,13 @@ class IDopenMcpConfigurable : Configurable {
             McpTarget.PROJECT -> {
                 val projectRoot = currentProject()?.let(::currentProjectRoot)
                 if (projectRoot == null) {
-                    targetField.selectedItem = McpTarget.USER
-                    McpConfigEditorSupport.loadUserConfig()
-                } else {
-                    McpConfigEditorSupport.loadProjectConfig(projectRoot)
+                    Messages.showWarningDialog(
+                        t("Please select a project before editing or saving project-scoped MCP config.", "Choose a project first before editing or saving project-scoped MCP config."),
+                        "IDopen MCP",
+                    )
+                    return
                 }
+                McpConfigEditorSupport.loadProjectConfig(projectRoot)
             }
         }
         loadedDocument = document
@@ -798,7 +827,46 @@ class IDopenMcpConfigurable : Configurable {
     }
 
     private fun currentProject(): Project? {
-        return ProjectManager.getInstance().openProjects.firstOrNull { !it.isDisposed && !it.basePath.isNullOrBlank() }
+        return selectedProjectChoice()?.project
+    }
+
+    private fun refreshProjectChoices() {
+        val openProjects = ProjectManager.getInstance().openProjects
+            .filter { !it.isDisposed && !it.basePath.isNullOrBlank() }
+            .sortedBy { it.name.lowercase() }
+        val rememberedPath = selectedProjectPath
+        val choices = buildList {
+            if (openProjects.size != 1) {
+                add(ProjectChoice(null, "Select project"))
+            }
+            openProjects.forEach { project ->
+                val basePath = project.basePath?.trim().orEmpty()
+                add(
+                    ProjectChoice(
+                        project = project,
+                        label = if (basePath.isBlank()) {
+                            project.name
+                        } else {
+                            "${project.name}  (${basePath.replace('\\', '/')})"
+                        },
+                    ),
+                )
+            }
+        }
+
+        projectField.removeAllItems()
+        choices.forEach(projectField::addItem)
+
+        val selectedProject = openProjects.firstOrNull { it.basePath == rememberedPath }
+            ?: openProjects.singleOrNull()
+        selectedProjectPath = selectedProject?.basePath?.trim()?.takeIf { it.isNotBlank() }
+        projectField.selectedItem = choices.firstOrNull { it.project?.basePath == selectedProjectPath }
+            ?: choices.firstOrNull()
+        projectField.isEnabled = openProjects.isNotEmpty()
+    }
+
+    private fun selectedProjectChoice(): ProjectChoice? {
+        return projectField.selectedItem as? ProjectChoice
     }
 
     private fun currentProjectRoot(project: Project): Path? {

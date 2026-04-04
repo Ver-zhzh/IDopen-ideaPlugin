@@ -11,6 +11,19 @@ import kotlin.test.assertTrue
 
 class ChatGptAuthSupportTest {
     @Test
+    fun `device auth polling state extracts pending and terminal errors`() {
+        assertEquals(
+            "authorization_pending",
+            ChatGptAuthSupport.parseDeviceAuthorizationPollingState("""{"error":"authorization_pending"}"""),
+        )
+        assertEquals(
+            "expired_token",
+            ChatGptAuthSupport.parseDeviceAuthorizationPollingState("""{"status":"expired_token"}"""),
+        )
+        assertNull(ChatGptAuthSupport.parseDeviceAuthorizationPollingState("not-json"))
+    }
+
+    @Test
     fun `parse jwt claims returns null for invalid token`() {
         assertNull(ChatGptAuthSupport.parseJwtClaims("not-a-jwt"))
     }
