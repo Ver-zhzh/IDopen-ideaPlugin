@@ -939,6 +939,15 @@ class IDopenMcpConfigurable : Configurable {
     }
 
     private fun t(zh: String, en: String): String {
-        return if (DisplayLanguage.fromStored(settings.displayLanguage) == DisplayLanguage.ZH_CN) zh else en
+        if (DisplayLanguage.fromStored(settings.displayLanguage) != DisplayLanguage.ZH_CN) {
+            return en
+        }
+        return if (looksLikeMojibake(zh)) en else zh
+    }
+
+    private fun looksLikeMojibake(value: String): Boolean {
+        if (value.contains('\uFFFD')) return true
+        val markers = listOf("锛", "銆", "鏈", "璇", "缂", "鍒", "鍦", "鐢", "宸", "闈", "澶", "鍚", "鍙", "妫", "椤", "瀛", "鎵", "鏃", "鍐", "绠")
+        return markers.count { value.contains(it) } >= 2
     }
 }
