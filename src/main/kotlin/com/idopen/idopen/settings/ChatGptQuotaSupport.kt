@@ -131,6 +131,14 @@ object ChatGptQuotaSupport {
                 )
             }
         }
+
+        fun safeSummary(language: DisplayLanguage = DisplayLanguage.EN_US): String {
+            return sanitizedText(summary(language), ::summary, language)
+        }
+
+        fun safeDetails(language: DisplayLanguage = DisplayLanguage.EN_US): String {
+            return sanitizedText(details(language), ::details, language)
+        }
     }
 
     fun fetchQuotaStatus(settings: IDopenSettingsState = IDopenSettingsState.getInstance()): ChatGptQuotaStatus {
@@ -411,5 +419,31 @@ object ChatGptQuotaSupport {
 
     private fun normalizeEpoch(value: Long): Long {
         return if (value >= 1_000_000_000_000L) value else value * 1_000L
+    }
+
+    private fun sanitizedText(
+        text: String,
+        fallback: (DisplayLanguage) -> String,
+        language: DisplayLanguage,
+    ): String {
+        if (language != DisplayLanguage.ZH_CN) return text
+        return if (containsCorruptedLocalizedText(text)) fallback(DisplayLanguage.EN_US) else text
+    }
+
+    private fun containsCorruptedLocalizedText(text: String): Boolean {
+        return listOf(
+            "鍓",
+            "棰",
+            "鏈嶅姟",
+            "璇",
+            "濂楅",
+            "涓荤獥",
+            "娆＄獥",
+            "閫熺巼",
+            "浠ｇ爜瀹℃煡",
+            "鍙敤",
+            "浣欓",
+            "鐧诲綍",
+        ).any(text::contains)
     }
 }

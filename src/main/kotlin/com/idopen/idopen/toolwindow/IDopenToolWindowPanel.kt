@@ -1398,7 +1398,7 @@ class IDopenToolWindowPanel(private val project: Project) {
             ),
         )
         resolved.onSuccess { quota ->
-            Messages.showInfoMessage(project, quota.details(language), if (language == DisplayLanguage.ZH_CN) "ChatGPT 额度" else "ChatGPT quota")
+            Messages.showInfoMessage(project, quota.safeDetails(language), if (language == DisplayLanguage.ZH_CN) "ChatGPT 额度" else "ChatGPT quota")
         }.onFailure { error ->
             Messages.showErrorDialog(
                 project,

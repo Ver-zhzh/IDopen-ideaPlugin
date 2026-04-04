@@ -7,6 +7,27 @@ import kotlin.test.assertTrue
 
 class ChatGptQuotaSupportTest {
     @Test
+    fun `safe summary falls back to english when localized text is corrupted`() {
+        val status = ChatGptQuotaSupport.ChatGptQuotaStatus(
+            planType = "pro",
+            windows = listOf(
+                ChatGptQuotaSupport.QuotaWindow(
+                    source = "primary_window",
+                    labelOverride = "鍓╀綑绐楀彛",
+                    usedPercent = 25,
+                    remainingPercent = 75,
+                    resetAt = null,
+                    windowSeconds = 3600,
+                ),
+            ),
+            credits = null,
+        )
+
+        assertTrue(status.safeSummary(DisplayLanguage.ZH_CN).contains("Quota"))
+        assertTrue(status.safeDetails(DisplayLanguage.ZH_CN).contains("ChatGPT Codex quota"))
+    }
+
+    @Test
     fun `parse quota status extracts primary and secondary windows`() {
         val status = ChatGptQuotaSupport.parseQuotaStatus(
             """

@@ -365,7 +365,7 @@ class IDopenSettingsConfigurable : Configurable {
                 ChatGptQuotaSupport.fetchQuotaStatus(settings)
             }.onSuccess { quota ->
                 refreshQuotaStatus(quota)
-                Messages.showInfoMessage(panel, quota.details(displayLanguage), t("ChatGPT 额度", "ChatGPT quota"))
+                Messages.showInfoMessage(panel, quota.safeDetails(displayLanguage), t("ChatGPT 额度", "ChatGPT quota"))
             }.onFailure { error ->
                 Messages.showErrorDialog(panel, error.message ?: t("获取 ChatGPT 额度失败。", "Failed to fetch ChatGPT quota."), t("ChatGPT 额度", "ChatGPT quota"))
             }
@@ -553,11 +553,11 @@ class IDopenSettingsConfigurable : Configurable {
         val loggedIn = ChatGptAuthSupport.getStatus(settings).loggedIn
         quotaStatusLabel.text = when {
             !loggedIn -> t("额度：请先登录 ChatGPT", "Quota: sign in with ChatGPT first")
-            quota != null -> quota.summary(displayLanguage)
+            quota != null -> quota.safeSummary(displayLanguage)
             else -> t("额度：尚未检查", "Quota: not checked yet")
         }
         quotaStatusLabel.toolTipText = when {
-            quota != null -> quota.details(displayLanguage)
+            quota != null -> quota.safeDetails(displayLanguage)
             loggedIn -> t("点击“检查额度”以获取最新的 ChatGPT Codex 额度。", "Click \"Check quota\" to fetch the latest ChatGPT Codex quota.")
             else -> t("登录 ChatGPT 后可使用额度查询。", "Quota lookup is available after ChatGPT login.")
         }
