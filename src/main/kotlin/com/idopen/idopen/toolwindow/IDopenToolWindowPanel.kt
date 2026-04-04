@@ -28,6 +28,7 @@ import com.idopen.idopen.agent.TranscriptEntry
 import com.idopen.idopen.settings.ChatGptQuotaSupport
 import com.idopen.idopen.settings.DisplayLanguage
 import com.idopen.idopen.settings.IDopenSettingsState
+import com.idopen.idopen.settings.LocalizedTextSupport
 import com.intellij.icons.AllIcons
 import com.intellij.diff.DiffContentFactory
 import com.intellij.diff.DiffManager
@@ -1117,12 +1118,7 @@ class IDopenToolWindowPanel(private val project: Project) {
 
     private fun currentProjectRoot(): Path = Paths.get(project.basePath ?: ".").toAbsolutePath().normalize()
 
-    private fun t(zh: String, en: String): String {
-        if (currentLanguage() != DisplayLanguage.ZH_CN) {
-            return en
-        }
-        return if (looksLikeMojibake(zh)) en else zh
-    }
+    private fun t(zh: String, en: String): String = LocalizedTextSupport.choose(currentLanguage(), zh, en)
 
     private fun looksLikeMojibake(value: String): Boolean {
         if (value.contains('\uFFFD')) return true

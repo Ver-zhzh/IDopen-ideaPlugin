@@ -938,12 +938,7 @@ class IDopenMcpConfigurable : Configurable {
         return toString().replace('\\', '/')
     }
 
-    private fun t(zh: String, en: String): String {
-        if (DisplayLanguage.fromStored(settings.displayLanguage) != DisplayLanguage.ZH_CN) {
-            return en
-        }
-        return if (looksLikeMojibake(zh)) en else zh
-    }
+    private fun t(zh: String, en: String): String = LocalizedTextSupport.choose(settings.displayLanguage, zh, en)
 
     private fun looksLikeMojibake(value: String): Boolean {
         if (value.contains('\uFFFD')) return true

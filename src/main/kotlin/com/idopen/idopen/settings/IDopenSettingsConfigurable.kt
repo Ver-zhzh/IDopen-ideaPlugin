@@ -658,7 +658,7 @@ class IDopenSettingsConfigurable : Configurable {
         }
     }
 
-    private fun t(zh: String, en: String): String = localize(zh, en)
+    private fun t(zh: String, en: String): String = LocalizedTextSupport.choose(displayLanguage, zh, en)
 
     private fun localize(zh: String, en: String): String {
         if (displayLanguage != DisplayLanguage.ZH_CN) {
