@@ -426,8 +426,9 @@ object ChatGptQuotaSupport {
         fallback: (DisplayLanguage) -> String,
         language: DisplayLanguage,
     ): String {
-        if (language != DisplayLanguage.ZH_CN) return text
-        return if (containsCorruptedLocalizedText(text)) fallback(DisplayLanguage.EN_US) else text
+        return LocalizedTextSupport.fallbackToEnglishIfCorrupted(language, text) {
+            fallback(DisplayLanguage.EN_US)
+        }
     }
 
     private fun containsCorruptedLocalizedText(text: String): Boolean {

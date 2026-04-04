@@ -20,4 +20,16 @@ class LocalizedTextSupportTest {
     fun `choose returns english when display language is not chinese`() {
         assertEquals("Quota", LocalizedTextSupport.choose(DisplayLanguage.EN_US, "额度", "Quota"))
     }
+
+    @Test
+    fun `fallbackToEnglishIfCorrupted keeps clean localized text and replaces broken text`() {
+        assertEquals(
+            "额度",
+            LocalizedTextSupport.fallbackToEnglishIfCorrupted(DisplayLanguage.ZH_CN, "额度") { "Quota" },
+        )
+        assertEquals(
+            "Quota",
+            LocalizedTextSupport.fallbackToEnglishIfCorrupted(DisplayLanguage.ZH_CN, "棰濆害") { "Quota" },
+        )
+    }
 }

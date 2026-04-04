@@ -35,6 +35,13 @@ object LocalizedTextSupport {
         return choose(DisplayLanguage.fromStored(storedLanguage), zh, en)
     }
 
+    fun fallbackToEnglishIfCorrupted(language: DisplayLanguage, text: String, fallback: () -> String): String {
+        if (language != DisplayLanguage.ZH_CN) {
+            return text
+        }
+        return if (looksLikeMojibake(text)) fallback() else text
+    }
+
     fun looksLikeMojibake(value: String): Boolean {
         if (value.contains('\uFFFD')) return true
         return mojibakeMarkers.any(value::contains)
